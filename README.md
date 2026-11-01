@@ -5,6 +5,14 @@ OpenGL ES 3, dans un APK de moins de 300 Ko.
 
 ![Interface de Rustine : panneaux latéraux, pastilles et cube 3D](docs/apercu.png)
 
+## Télécharger
+
+**[Télécharger l'APK (version 0.1)](https://github.com/s1pierro/Rustine/releases/download/v0.1/rustine-0.1.apk)**
+
+Pour les appareils ARM 64 bits, sous Android 8.0 ou plus récent, avec OpenGL ES 3.
+L'APK étant signé avec une clé de debug, Android demandera d'autoriser
+l'installation depuis une source inconnue.
+
 ## Fonctions
 
 - Espace de travail qui s'adapte aux panneaux, la 3D suit sa forme
@@ -16,8 +24,6 @@ OpenGL ES 3, dans un APK de moins de 300 Ko.
 - Chaque doigt reste à ce qu'il a touché en premier ; hors des boutons, un doigt
   tourne la vue, deux doigts zooment et déplacent
 - Rien n'est redessiné tant que rien ne bouge
-
-Nécessite Android 8.0 (API 26) ou plus récent et OpenGL ES 3.
 
 ## Organisation
 
