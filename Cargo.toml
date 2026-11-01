@@ -2,6 +2,7 @@
 name = "rustine"
 version = "0.1.0"
 edition = "2021"
+license = "PolyForm-Noncommercial-1.0.0"
 
 # Seule dépendance : fontdue, pour dessiner le texte à partir des polices du
 # système. OpenGL ES est chargé à l'exécution via dlopen : les libEGL de Termux

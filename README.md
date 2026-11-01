@@ -43,3 +43,10 @@ avec le Rust natif de Termux :
 L'APK est produit dans `dist/rustine.apk`. La compilation a lieu dans
 `~/.cache/rust-apk/rustine`, pour fonctionner aussi depuis le stockage partagé,
 où rien ne peut s'exécuter.
+
+## Licence
+
+Rustine est réutilisable, modifiable et redistribuable à des fins non
+commerciales, selon la [PolyForm Noncommercial License 1.0.0](LICENSE.md). La
+mention de copyright et la licence doivent accompagner chaque copie. Pour un
+usage commercial, contactez l'auteur.
