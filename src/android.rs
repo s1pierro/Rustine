@@ -148,7 +148,7 @@ fn render_loop() -> Result<(), String> {
     let mut text = Text::new();
     let mut dl = DrawList::default();
     let mut last = Instant::now();
-    let mut again = false; // la taille de surface a changé après la dernière image
+    let mut again = false; // la dernière image demande à être suivie d'une autre
 
     loop {
         let (window, changed, events, dp) = {
@@ -200,8 +200,9 @@ fn render_loop() -> Result<(), String> {
         ui.end_frame();
         render.draw(w, h, &scene, &dl, &mut text);
         egl.swap();
-        // Après une rotation, la nouvelle taille n'est connue qu'ici.
-        again = egl.size() != (w, h);
+        // Après une rotation, la nouvelle taille n'est connue qu'ici ; et un appui change
+        // l'état après le dessin du widget, qu'il faut redessiner à jour.
+        again = egl.size() != (w, h) || ui.a_redessiner();
     }
 }
 

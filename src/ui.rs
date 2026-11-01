@@ -106,6 +106,8 @@ pub struct Ui {
     drags: HashMap<Id, Drag>,
     scrolls: HashMap<Id, f32>,
     gesture: Gesture,
+    /// Un événement vient d'être traité : voir `a_redessiner`.
+    agite: bool,
 }
 
 impl Ui {
@@ -122,6 +124,7 @@ impl Ui {
             drags: HashMap::new(),
             scrolls: HashMap::new(),
             gesture: Gesture::default(),
+            agite: false,
         }
     }
 
@@ -139,6 +142,7 @@ impl Ui {
 
     /// `t` : instant de l'événement, en secondes.
     pub fn event(&mut self, ev: Event, t: f64) {
+        self.agite = true;
         match ev {
             Event::Down { id, x, y } => {
                 let owner = match self.hit(x, y) {
@@ -228,6 +232,13 @@ impl Ui {
         }
     }
 
+    /// Vrai une fois après une image qui a reçu un événement. Un widget apprend qu'il
+    /// est touché en se dessinant : l'état change donc après son dessin, et sans une
+    /// image de plus, l'écran resterait en retard jusqu'au prochain événement.
+    pub fn a_redessiner(&mut self) -> bool {
+        std::mem::take(&mut self.agite)
+    }
+
     pub fn set_clip(&mut self, clip: Option<Rect>) {
         self.clip = clip;
     }
@@ -298,6 +309,19 @@ mod tests {
 
     fn down(u: &mut Ui, i: i32, x: f32, y: f32) {
         u.event(Event::Down { id: i, x, y }, 0.0);
+    }
+
+    #[test]
+    fn une_image_de_plus_suit_chaque_evenement() {
+        let mut u = ui();
+        assert!(!u.a_redessiner());
+        down(&mut u, 0, 20., 20.);
+        u.event(Event::Up { id: 0 }, 0.1);
+        assert!(u.clicked(BTN));
+        u.end_frame();
+        assert!(u.a_redessiner());
+        // L'image suivante n'a rien reçu : la boucle peut s'endormir
+        assert!(!u.a_redessiner());
     }
 
     #[test]
