@@ -1,11 +1,13 @@
-//! Démonstration : un cube dans l'espace de travail, un panneau de chaque côté,
-//! des pastilles pour les déployer et des pilules flottantes.
+//! Démonstration : l'espace de travail partagé en fenêtres (un cube, une liste, une
+//! aide), un panneau de chaque côté, des pastilles pour les déployer.
 
 use crate::draw::{Color, Rect};
 use crate::math::{self, Mat4};
 use crate::shell::{Layout, Shell, Side};
+use crate::surface::{Changement, FenetreId, Placee, Surface};
 use crate::ui::{id, sub_id, Id};
-use crate::widgets::{self, Cx, Icon, Scrolls};
+use crate::widgets::{Cx, Icon, Scrolls, Theme, ACCENTS};
+use std::collections::HashMap;
 
 const COLORS: [(&str, Color); 14] = [
     ("Indigo", [0x4A, 0x45, 0xE0, 255]),
@@ -29,13 +31,32 @@ const DISPLAY: Id = id("affichage");
 const HELP: Id = id("aide");
 const FIT: Id = id("recadrer");
 const SPIN: Id = id("rotation");
+const LISTE: Id = id("liste-fenetre");
+const AIDE: Id = id("aide-fenetre");
 
-/// Ce que le moteur de rendu doit dessiner dans l'espace de travail.
+const PARAMS: Id = id("parametres");
+
+/// Les vues qu'une fenêtre de la surface peut montrer.
+pub const VUES: [&str; 4] = ["Cube", "Couleurs", "Aide", "Paramètres"];
+pub const VUE_CUBE: u32 = 0;
+pub const VUE_COULEURS: u32 = 1;
+pub const VUE_AIDE: u32 = 2;
+pub const VUE_PARAMETRES: u32 = 3;
+
+/// Une vue 3D : son rectangle à l'écran et sa matrice.
 #[derive(Clone, Copy)]
+pub struct Vue3d {
+    pub rect: Rect,
+    pub mvp: Mat4,
+}
+
+/// Ce que le moteur de rendu doit dessiner : un cube dans chaque vue 3D.
+#[derive(Clone)]
 pub struct Scene {
     pub workspace: Rect,
-    pub mvp: Mat4,
-    pub model: Mat4,
+    pub vues: Vec<Vue3d>,
+    /// Le fond de l'écran, que la 3D laisse voir.
+    pub fond: Color,
     pub color: [f32; 3],
     pub tint: f32,
 }
@@ -58,7 +79,12 @@ enum EndContent {
 
 pub struct App {
     pub shell: Shell,
-    cam: Camera,
+    /// L'apparence de l'interface, réglée dans la vue Paramètres.
+    pub theme: Theme,
+    /// L'espace de travail, partagé en fenêtres.
+    pub surface: Surface,
+    /// Une caméra par fenêtre 3D.
+    cams: HashMap<FenetreId, Camera>,
     end_content: EndContent,
     display_tab: usize,
     color: usize,
@@ -74,7 +100,9 @@ impl App {
     pub fn new(dp: f32) -> App {
         App {
             shell: Shell::new(dp),
-            cam: HOME,
+            theme: Theme::default(),
+            surface: Surface::new(VUE_CUBE),
+            cams: HashMap::new(),
             end_content: EndContent::Display,
             display_tab: 0,
             color: 0,
@@ -102,29 +130,62 @@ impl App {
         }
     }
 
-    pub fn frame(&mut self, cx: &mut Cx, screen: Rect, dt: f32) -> Scene {
-        let l = self.shell.layout(screen, dt);
-        let w = l.workspace;
-        self.gestures(cx, w);
-        if self.spin {
-            self.cam.yaw += self.speed.to_radians() * dt;
-        }
+    fn cam(&mut self, f: FenetreId) -> &mut Camera {
+        self.cams.entry(f).or_insert(HOME)
+    }
 
-        self.floating(cx, w);
+    pub fn frame(&mut self, cx: &mut Cx, screen: Rect, dt: f32) -> Scene {
+        cx.theme = self.theme;
+        let l = self.shell.layout(screen, dt);
+        let placees = self.surface.frame(cx, l.workspace, &VUES);
+        for c in self.surface.changements() {
+            match c {
+                // La nouvelle fenêtre part de la caméra de celle qu'on a partagée
+                Changement::Partagee { de, nouvelle } => {
+                    let cam = *self.cam(de);
+                    self.cams.insert(nouvelle, cam);
+                }
+                Changement::Fermee(f) => {
+                    self.cams.remove(&f);
+                }
+                Changement::Vue { .. } => {}
+            }
+        }
+        self.gestures(cx);
+        if self.spin {
+            let a = self.speed.to_radians() * dt;
+            for p in placees.iter().filter(|p| p.vue == VUE_CUBE) {
+                self.cam(p.id).yaw += a;
+            }
+        }
+        for p in &placees {
+            self.fenetre(cx, p);
+        }
+        // Les pastilles flottent dans la première fenêtre 3D, sinon dans la première
+        if let Some(p) = placees.iter().find(|p| p.vue == VUE_CUBE).or(placees.first()) {
+            self.floating(cx, p.contenu);
+        }
+        self.surface.dessus(cx, &VUES);
+
         self.start_panel(cx, &l);
         self.end_panel(cx, &l);
         self.handles(cx, &l, screen);
-        self.scene(w)
+        let mut scene = self.scene(l.workspace, &placees);
+        scene.fond = cx.couleurs().fond;
+        scene
     }
 
-    fn gestures(&mut self, cx: &mut Cx, w: Rect) {
+    /// Les gestes de l'espace de travail pilotent la vue 3D où ils ont commencé.
+    fn gestures(&mut self, cx: &mut Cx) {
         let g = cx.ui.take_gesture();
-        let c = &mut self.cam;
+        let Some(p) = g.at.and_then(|(x, y)| self.surface.fenetre_en(x, y).copied()).filter(|p| p.vue == VUE_CUBE) else { return };
+        let fov = self.fov;
+        let c = self.cam(p.id);
         c.yaw -= g.orbit.0 * 0.008;
         c.pitch = (c.pitch + g.orbit.1 * 0.008).clamp(-1.5, 1.5);
         c.dist = (c.dist / g.zoom).clamp(1.8, 24.0);
         // Déplacement à l'échelle de l'image : le cube suit les doigts.
-        let k = 2.0 * c.dist * (self.fov.to_radians() / 2.0).tan() / w.h.max(1.0);
+        let k = 2.0 * c.dist * (fov.to_radians() / 2.0).tan() / p.contenu.h.max(1.0);
         let (sy, cy, sp, cp) = (c.yaw.sin(), c.yaw.cos(), c.pitch.sin(), c.pitch.cos());
         let (right, up) = ([cy, 0.0, -sy], [-sy * sp, cp, -cy * sp]);
         for i in 0..3 {
@@ -132,42 +193,114 @@ impl App {
         }
     }
 
+    /// Le contenu d'une fenêtre, selon sa vue, et sa ligne d'état.
+    fn fenetre(&mut self, cx: &mut Cx, p: &Placee) {
+        let (d, col) = (cx.dp, cx.couleurs());
+        let k = p.id as usize;
+        let r = p.contenu;
+        let etat = match p.vue {
+            VUE_CUBE => {
+                let (gap, m, h) = (10.0 * d, 14.0 * d, cx.commande());
+                let (w1, w2) = (cx.pill_width("Recadrer"), cx.pill_width("Rotation"));
+                if r.h > 3.0 * h && r.w > w1 + w2 + gap + 2.0 * m {
+                    let x = r.cx() - (w1 + w2 + gap) / 2.0;
+                    let y = r.bottom() - h - m;
+                    if cx.pill(sub_id(FIT, k), x, y, "Recadrer", false) {
+                        self.cams.insert(p.id, HOME);
+                    }
+                    if cx.pill(sub_id(SPIN, k), x + w1 + gap, y, "Rotation", self.spin) {
+                        self.spin = !self.spin;
+                    }
+                }
+                format!("1 objet · 12 triangles · fenêtre {}", p.id)
+            }
+            VUE_COULEURS => {
+                cx.dl.rrect(r, 0.0, col.surface);
+                let scroll = sub_id(LISTE, k);
+                let mut b = cx.body(scroll, r, &self.scrolls);
+                for (i, (name, color)) in COLORS.iter().enumerate() {
+                    if cx.row(&mut b, sub_id(scroll, i), name, Some(*color), i == self.color) {
+                        self.color = i;
+                    }
+                }
+                cx.body_end(b, &mut self.scrolls);
+                format!("{} couleurs · {}", COLORS.len(), COLORS[self.color].0)
+            }
+            VUE_PARAMETRES => {
+                cx.dl.rrect(r, 0.0, col.surface);
+                self.parametres(cx, sub_id(PARAMS, k), r);
+                "Apparence de l'interface".to_string()
+            }
+            _ => {
+                cx.dl.rrect(r, 0.0, col.surface);
+                let mut b = cx.body(sub_id(AIDE, k), r, &self.scrolls);
+                cx.section(&mut b, "FENÊTRES");
+                cx.paragraph(&mut b, "Glissez le doigt sur la barre d'une fenêtre pour la partager : vers le côté, elles se placent côte à côte ; vers le bas, l'une sur l'autre.");
+                cx.paragraph(&mut b, "La poignée du coin bas droit déplace les bords de la fenêtre.");
+                cx.paragraph(&mut b, "Le menu ⋮ choisit ce que montre la fenêtre, ou la ferme.");
+                cx.section(&mut b, "GESTES");
+                cx.paragraph(&mut b, "Un doigt sur une vue 3D la fait tourner ; deux doigts zooment et déplacent.");
+                cx.body_end(b, &mut self.scrolls);
+                "Aide".to_string()
+            }
+        };
+        let e = p.etat;
+        cx.clip(Some(Rect::new(e.x, e.y, (e.w - 30.0 * d).max(0.0), e.h)));
+        cx.text_at(e.x + 10.0 * d, e.cy(), &etat, 12.5, col.pale);
+        cx.clip(None);
+    }
+
+    /// La vue Paramètres : l'apparence, appliquée dès l'image suivante.
+    fn parametres(&mut self, cx: &mut Cx, scroll: Id, r: Rect) {
+        let t = &mut self.theme;
+        let mut b = cx.body(scroll, r, &self.scrolls);
+        cx.section(&mut b, "COMMANDES");
+        let shown = format!("{:.0} dp", t.commande);
+        cx.slider(&mut b, sub_id(scroll, 0), "Taille des commandes", &shown, &mut t.commande, 36.0, 64.0);
+        t.commande = t.commande.round();
+        let shown = format!("{:.0} %", t.arrondi * 100.0);
+        cx.slider(&mut b, sub_id(scroll, 1), "Arrondi", &shown, &mut t.arrondi, 0.0, 1.0);
+        cx.section(&mut b, "LECTURE");
+        let shown = format!("{:.0} %", t.texte * 100.0);
+        cx.slider(&mut b, sub_id(scroll, 2), "Taille du texte", &shown, &mut t.texte, 0.85, 1.3);
+        t.texte = (t.texte * 20.0).round() / 20.0;
+        let shown = format!("{:.0} dp", t.ligne);
+        cx.slider(&mut b, sub_id(scroll, 3), "Hauteur des lignes", &shown, &mut t.ligne, 40.0, 64.0);
+        t.ligne = t.ligne.round();
+        cx.section(&mut b, "COULEURS");
+        cx.toggle(&mut b, sub_id(scroll, 4), "Thème sombre", &mut t.sombre);
+        for (i, (nom, clair, fonce)) in ACCENTS.iter().enumerate() {
+            let teinte = if t.sombre { *fonce } else { *clair };
+            if cx.row(&mut b, sub_id(scroll, 10 + i), nom, Some(teinte), i == t.accent) {
+                t.accent = i;
+            }
+        }
+        if cx.button(&mut b, sub_id(scroll, 5), "Rétablir l'apparence") {
+            *t = Theme::default();
+        }
+        cx.body_end(b, &mut self.scrolls);
+    }
+
     fn floating(&mut self, cx: &mut Cx, w: Rect) {
         let d = cx.dp;
-        let (size, gap, m) = (52.0 * d, 10.0 * d, 14.0 * d);
-        let at = |i: f32| Rect::new(w.x + m + i * (size + gap), w.y + m, size, size);
+        let (size, gap, m) = (cx.commande(), 10.0 * d, 14.0 * d);
+        let at = |i: f32| (w.x + m + i * (size + gap), w.y + m);
         let (end, content) = (self.shell.end.open, self.end_content);
-        if cx.pastille(OBJECTS, at(0.0), Icon::List, self.shell.start.open) {
+        if cx.pastille(OBJECTS, at(0.0).0, at(0.0).1, Icon::List, self.shell.start.open) {
             self.shell.start.toggle();
         }
-        if cx.pastille(DISPLAY, at(1.0), Icon::Sliders, end && content == EndContent::Display) {
+        if cx.pastille(DISPLAY, at(1.0).0, at(1.0).1, Icon::Sliders, end && content == EndContent::Display) {
             self.toggle_end(EndContent::Display);
         }
-        if cx.pastille(HELP, at(2.0), Icon::Help, end && content == EndContent::Help) {
+        if cx.pastille(HELP, at(2.0).0, at(2.0).1, Icon::Help, end && content == EndContent::Help) {
             self.toggle_end(EndContent::Help);
-        }
-
-        // Le titre s'efface quand l'espace devient étroit.
-        if w.w > 420.0 * d {
-            cx.text_right(w.right() - m, w.y + m + 14.0 * d, "Rustine", 19.0, widgets::TEXT);
-            cx.text_right(w.right() - m, w.y + m + 38.0 * d, "1 objet · 12 triangles", 14.0, widgets::DIM);
-        }
-
-        let h = 44.0 * d;
-        let (w1, w2) = (cx.pill_width("Recadrer"), cx.pill_width("Rotation"));
-        let x = w.cx() - (w1 + w2 + gap) / 2.0;
-        let y = w.bottom() - h - m;
-        if cx.pill(FIT, Rect::new(x, y, w1, h), "Recadrer", false) {
-            self.cam = HOME;
-        }
-        if cx.pill(SPIN, Rect::new(x + w1 + gap, y, w2, h), "Rotation", self.spin) {
-            self.spin = !self.spin;
         }
     }
 
     fn panel_frame(&self, cx: &mut Cx, id: Id, r: Rect, side: Side, landscape: bool) {
         cx.ui.region_add(id, r, crate::ui::Sense::Sink);
-        cx.dl.rrect(r, 0.0, widgets::SURFACE);
+        let col = cx.couleurs();
+        cx.dl.rrect(r, 0.0, col.surface);
         let t = cx.dp.max(1.0);
         let line = match (side, landscape) {
             (Side::Start, true) => Rect::new(r.right() - t, r.y, t, r.h),
@@ -175,19 +308,20 @@ impl App {
             (Side::Start, false) => Rect::new(r.x, r.bottom() - t, r.w, t),
             (Side::End, false) => Rect::new(r.x, r.y, r.w, t),
         };
-        cx.dl.rrect(line, 0.0, widgets::LINE);
+        cx.dl.rrect(line, 0.0, col.ligne);
     }
 
     /// En-tête d'un panneau : renvoie le rectangle du corps, et vrai si ✕ a été touché.
     fn panel_header(&self, cx: &mut Cx, id_close: Id, r: Rect) -> (Rect, Rect, bool) {
-        let d = cx.dp;
-        let head = 60.0 * d;
-        let close = Rect::new(r.right() - 50.0 * d, r.y + 8.0 * d, 44.0 * d, 44.0 * d);
+        let (d, col, h) = (cx.dp, cx.couleurs(), cx.commande());
+        let head = h + 12.0 * d;
+        let close = Rect::new(r.right() - h - 6.0 * d, r.y + 6.0 * d, h, h);
         let clicked = cx.ui.click(id_close, close, None);
-        cx.dl.rrect(close, 22.0 * d, widgets::CHIP);
-        cx.icon(close.inset(11.0 * d), Icon::Close, widgets::TEXT);
-        cx.dl.rrect(Rect::new(r.x, r.y + head - d, r.w, d.max(1.0)), 0.0, widgets::LINE);
-        (Rect::new(r.x + 12.0 * d, r.y + 11.0 * d, r.w - 74.0 * d, 38.0 * d), Rect::new(r.x, r.y + head, r.w, r.h - head), clicked)
+        cx.dl.rrect(close, cx.theme.rayon(h), col.puce);
+        cx.icon(close.inset(h * 0.25), Icon::Close, col.texte);
+        cx.dl.rrect(Rect::new(r.x, r.y + head - d, r.w, d.max(1.0)), 0.0, col.ligne);
+        // Les onglets partent de (x, y) ; le clip les garde à gauche du ✕
+        (Rect::new(r.x + 12.0 * d, r.y + 6.0 * d, r.w - h - 30.0 * d, h), Rect::new(r.x, r.y + head, r.w, r.h - head), clicked)
     }
 
     fn start_panel(&mut self, cx: &mut Cx, l: &Layout) {
@@ -200,7 +334,7 @@ impl App {
         if close {
             self.shell.start.open = false;
         }
-        cx.tabs(id("onglets-debut"), tabs, &["Couleurs"], 0);
+        cx.tabs(id("onglets-debut"), tabs.x, tabs.y, &["Couleurs"], 0);
         let scroll = id("liste-couleurs");
         let mut b = cx.body(scroll, body, &self.scrolls);
         for (i, (name, color)) in COLORS.iter().enumerate() {
@@ -223,7 +357,7 @@ impl App {
         }
         match self.end_content {
             EndContent::Display => {
-                self.display_tab = cx.tabs(id("onglets-affichage"), tabs, &["Vue", "Cube"], self.display_tab);
+                self.display_tab = cx.tabs(id("onglets-affichage"), tabs.x, tabs.y, &["Vue", "Cube"], self.display_tab);
                 let scroll = sub_id(id("corps-affichage"), self.display_tab);
                 let mut b = cx.body(scroll, body, &self.scrolls);
                 if self.display_tab == 0 {
@@ -231,7 +365,7 @@ impl App {
                     let shown = format!("{:.0}°", self.fov);
                     cx.slider(&mut b, id("champ"), "Champ de vision", &shown, &mut self.fov, 25.0, 90.0);
                     if cx.button(&mut b, id("recadrer-panneau"), "Recadrer") {
-                        self.cam = HOME;
+                        self.cams.clear();
                     }
                     cx.section(&mut b, "ROTATION");
                     cx.toggle(&mut b, id("rotation-panneau"), "Rotation automatique", &mut self.spin);
@@ -247,7 +381,7 @@ impl App {
                 cx.body_end(b, &mut self.scrolls);
             }
             EndContent::Help => {
-                cx.tabs(id("onglets-aide"), tabs, &["Aide"], 0);
+                cx.tabs(id("onglets-aide"), tabs.x, tabs.y, &["Aide"], 0);
                 let mut b = cx.body(id("corps-aide"), body, &self.scrolls);
                 cx.section(&mut b, "GESTES");
                 cx.paragraph(&mut b, "Un doigt sur l'espace de travail fait tourner la vue.");
@@ -275,7 +409,7 @@ impl App {
                 self.shell.reset_size(side, screen);
             }
             let pressed = cx.ui.pressed(key);
-            let color = if pressed { widgets::ACCENT } else { [0x6C, 0x6C, 0x80, 140] };
+            let color = if pressed { cx.couleurs().accent } else { [0x6C, 0x6C, 0x80, 140] };
             let (long, thick) = (52.0 * d, 5.0 * d);
             let grip = if l.landscape {
                 Rect::new(band.cx() - thick / 2.0, band.cy() - long / 2.0, thick, long)
@@ -286,22 +420,23 @@ impl App {
         }
     }
 
-    fn scene(&self, w: Rect) -> Scene {
-        let c = &self.cam;
-        let (sy, cy, sp, cp) = (c.yaw.sin(), c.yaw.cos(), c.pitch.sin(), c.pitch.cos());
-        let eye = [c.target[0] + c.dist * sy * cp, c.target[1] + c.dist * sp, c.target[2] + c.dist * cy * cp];
-        let view = math::look_at(eye, c.target, [0.0, 1.0, 0.0]);
-        // Le rapport suit l'espace de travail : c'est lui qui « adapte » la 3D aux panneaux.
-        let proj = math::perspective(self.fov.to_radians(), w.w.max(1.0) / w.h.max(1.0), 0.1, 100.0);
+    fn scene(&self, w: Rect, placees: &[Placee]) -> Scene {
         let model = math::scale(self.size);
+        let vues = placees
+            .iter()
+            .filter(|p| p.vue == VUE_CUBE && p.contenu.w >= 1.0 && p.contenu.h >= 1.0)
+            .map(|p| {
+                let c = self.cams.get(&p.id).copied().unwrap_or(HOME);
+                let (sy, cy, sp, cp) = (c.yaw.sin(), c.yaw.cos(), c.pitch.sin(), c.pitch.cos());
+                let eye = [c.target[0] + c.dist * sy * cp, c.target[1] + c.dist * sp, c.target[2] + c.dist * cy * cp];
+                let view = math::look_at(eye, c.target, [0.0, 1.0, 0.0]);
+                // Le rapport suit la fenêtre : c'est lui qui « adapte » la 3D à la place.
+                let proj = math::perspective(self.fov.to_radians(), p.contenu.w / p.contenu.h, 0.1, 100.0);
+                Vue3d { rect: p.contenu, mvp: math::mul(&proj, &math::mul(&view, &model)) }
+            })
+            .collect();
         let [r, g, b, _] = COLORS[self.color].1;
-        Scene {
-            workspace: w,
-            mvp: math::mul(&proj, &math::mul(&view, &model)),
-            model,
-            color: [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0],
-            tint: if self.faces { 0.25 } else { 0.0 },
-        }
+        Scene { workspace: w, vues, fond: Theme::default().couleurs().fond, color: [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0], tint: if self.faces { 0.25 } else { 0.0 } }
     }
 }
 
@@ -329,7 +464,7 @@ mod tests {
         }
         fn frame(&mut self, dt: f32) -> Scene {
             self.dl.clear();
-            let mut cx = Cx { ui: &mut self.ui, text: &mut self.text, dl: &mut self.dl, dp: 1.5 };
+            let mut cx = Cx { ui: &mut self.ui, text: &mut self.text, dl: &mut self.dl, dp: 1.5, theme: Default::default() };
             let s = self.app.frame(&mut cx, SCREEN, dt);
             self.ui.end_frame();
             s
@@ -348,9 +483,20 @@ mod tests {
         }
     }
 
-    // Centre de la n-ième pastille quand aucun panneau n'est ouvert.
+    // Centre de la n-ième pastille quand aucun panneau n'est ouvert (sous la barre de la fenêtre).
     fn pastille(n: f32) -> (f32, f32) {
-        (1.5 * (14.0 + 26.0 + n * 62.0), 1.5 * (14.0 + 26.0))
+        (1.5 * (14.0 + 24.0 + n * 58.0), 1.5 * (36.0 + 14.0 + 24.0))
+    }
+
+    #[test]
+    fn la_taille_des_commandes_suit_le_theme() {
+        let mut r = Rig::new();
+        r.app.theme.commande = 60.0;
+        r.frames(1);
+        // La première pastille fait 60 dp : son centre est plus loin, sous une barre plus haute
+        let (x, y) = (1.5 * (14.0 + 30.0), 1.5 * (45.0 + 14.0 + 30.0));
+        r.tap(x, y);
+        assert!(r.app.shell.start.open);
     }
 
     #[test]
@@ -385,21 +531,41 @@ mod tests {
         let (x, y) = pastille(0.0);
         r.tap(x, y);
         r.frames(60);
-        let yaw = r.app.cam.yaw;
+        let yaw = r.app.cam(1).yaw;
         r.tap(200.0, 1.5 * (60.0 + 8.0 + 48.0 * 3.5));
         assert_eq!(r.app.color, 3);
-        assert_eq!(r.app.cam.yaw, yaw);
+        assert_eq!(r.app.cam(1).yaw, yaw);
     }
 
     #[test]
     fn glisser_sur_l_espace_de_travail_tourne_la_vue() {
         let mut r = Rig::new();
-        let yaw = r.app.cam.yaw;
+        let yaw = r.app.cam(1).yaw;
         r.ui.event(Event::Down { id: 0, x: 900., y: 600. }, 0.0);
         r.ui.event(Event::Move { id: 0, x: 1000., y: 600. }, 0.1);
         r.ui.event(Event::Move { id: 0, x: 1100., y: 600. }, 0.1);
         r.frames(1);
-        assert!(r.app.cam.yaw < yaw);
+        assert!(r.app.cam(1).yaw < yaw);
+    }
+
+    #[test]
+    fn chaque_fenetre_3d_a_sa_camera() {
+        let mut r = Rig::new();
+        let nouvelle = r.app.surface.partager(1, crate::surface::Sens::Colonnes, 0.5).unwrap();
+        let s = r.frames(1);
+        assert_eq!(s.vues.len(), 2);
+        assert_eq!(s.vues[0].rect.w, 960.0);
+        // Un geste dans la fenêtre de droite ne tourne qu'elle
+        let (a, b) = (r.app.cam(nouvelle).yaw, r.app.cam(1).yaw);
+        r.ui.event(Event::Down { id: 0, x: 1400., y: 600. }, 0.0);
+        r.ui.event(Event::Move { id: 0, x: 1500., y: 600. }, 0.1);
+        r.ui.event(Event::Move { id: 0, x: 1600., y: 600. }, 0.1);
+        r.frames(1);
+        assert_eq!(r.app.cam(nouvelle).yaw, a);
+        assert!(r.app.cam(1).yaw < b);
+        // Une fenêtre passée en liste n'a plus de 3D
+        r.app.surface.changer_vue(nouvelle, VUE_COULEURS);
+        assert_eq!(r.frames(1).vues.len(), 1);
     }
 
     #[test]

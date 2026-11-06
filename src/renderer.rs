@@ -1,4 +1,4 @@
-//! Tout OpenGL est ici : la 3D dans le rectangle de l'espace de travail, puis
+//! Tout OpenGL est ici : la 3D dans chaque vue de l'espace de travail, puis
 //! l'interface par-dessus, sur tout l'écran.
 
 use crate::demo::Scene;
@@ -224,22 +224,28 @@ impl Renderer {
         unsafe {
             (gl.glDisable)(SCISSOR);
             (gl.glViewport)(0, 0, w as i32, h as i32);
-            (gl.glClearColor)(0.953, 0.949, 0.98, 1.0);
+            let f = |i: usize| scene.fond[i] as f32 / 255.0;
+            (gl.glClearColor)(f(0), f(1), f(2), 1.0);
             (gl.glClear)(COLOR_BIT | DEPTH_BIT);
 
-            // 3D, limitée à l'espace de travail
-            let (x, y, vw, vh) = Self::gl_rect(scene.workspace, h);
-            if vw > 0 && vh > 0 {
-                (gl.glEnable)(DEPTH_TEST);
-                (gl.glDisable)(BLEND);
-                (gl.glEnable)(SCISSOR);
+            // 3D, chaque vue limitée à sa fenêtre
+            (gl.glEnable)(DEPTH_TEST);
+            (gl.glDisable)(BLEND);
+            (gl.glEnable)(SCISSOR);
+            (gl.glUseProgram)(self.cube_program);
+            (gl.glUniform3f)(self.u_color, scene.color[0], scene.color[1], scene.color[2]);
+            (gl.glUniform1f)(self.u_mix, scene.tint);
+            (gl.glBindVertexArray)(self.cube_vao);
+            for v in &scene.vues {
+                let (x, y, vw, vh) = Self::gl_rect(v.rect, h);
+                if vw <= 0 || vh <= 0 {
+                    continue;
+                }
                 (gl.glScissor)(x, y, vw, vh);
                 (gl.glViewport)(x, y, vw, vh);
-                (gl.glUseProgram)(self.cube_program);
-                (gl.glUniformMatrix4fv)(self.u_mvp, 1, 0, scene.mvp.as_ptr());
-                (gl.glUniform3f)(self.u_color, scene.color[0], scene.color[1], scene.color[2]);
-                (gl.glUniform1f)(self.u_mix, scene.tint);
-                (gl.glBindVertexArray)(self.cube_vao);
+                // Chaque vue a sa propre profondeur
+                (gl.glClear)(DEPTH_BIT);
+                (gl.glUniformMatrix4fv)(self.u_mvp, 1, 0, v.mvp.as_ptr());
                 (gl.glDrawArrays)(TRIANGLES, 0, 36);
             }
 

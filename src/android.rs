@@ -195,7 +195,7 @@ fn render_loop() -> Result<(), String> {
 
         let (w, h) = egl.size();
         dl.clear();
-        let mut cx = Cx { ui, text: &mut text, dl: &mut dl, dp };
+        let mut cx = Cx { ui, text: &mut text, dl: &mut dl, dp, theme: Default::default() };
         let scene = app.frame(&mut cx, Rect::new(0.0, 0.0, w, h), dt);
         ui.end_frame();
         render.draw(w, h, &scene, &dl, &mut text);

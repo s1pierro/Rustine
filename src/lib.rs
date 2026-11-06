@@ -12,6 +12,7 @@ pub mod gles;
 pub mod math;
 pub mod renderer;
 pub mod shell;
+pub mod surface;
 pub mod text;
 pub mod ui;
 pub mod widgets;

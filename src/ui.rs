@@ -84,11 +84,13 @@ pub struct Gesture {
     pub orbit: (f32, f32),
     pub pan: (f32, f32),
     pub zoom: f32,
+    /// Où le geste a commencé (le premier doigt posé), pour savoir quelle vue il pilote.
+    pub at: Option<(f32, f32)>,
 }
 
 impl Default for Gesture {
     fn default() -> Gesture {
-        Gesture { orbit: (0.0, 0.0), pan: (0.0, 0.0), zoom: 1.0 }
+        Gesture { orbit: (0.0, 0.0), pan: (0.0, 0.0), zoom: 1.0, at: None }
     }
 }
 
@@ -198,6 +200,9 @@ impl Ui {
     fn workspace_moved(&mut self, i: usize, ox: f32, oy: f32) {
         let me = self.pointers[i];
         let others: Vec<Pointer> = self.pointers.iter().filter(|p| p.owner == Owner::Workspace && p.id != me.id).copied().collect();
+        if self.gesture.at.is_none() && (me.slid || !others.is_empty()) {
+            self.gesture.at = Some(others.first().map_or(me.start, |o| o.start));
+        }
         match others.first() {
             None if me.slid => {
                 self.gesture.orbit.0 += me.x - ox;
@@ -374,6 +379,7 @@ mod tests {
         u.event(Event::Move { id: 0, x: 540., y: 510. }, 0.1);
         let g = u.take_gesture();
         assert_eq!(g.orbit, (40., 10.)); // le geste démarre avec le mouvement qui franchit le seuil
+        assert_eq!(g.at, Some((500., 500.)));
         down(&mut u, 1, 640., 510.);
         u.event(Event::Move { id: 1, x: 740., y: 510. }, 0.2);
         let g = u.take_gesture();

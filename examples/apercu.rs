@@ -19,15 +19,17 @@ struct Shot {
     start: bool,
     end: bool,
     help: bool,
+    fenetres: bool,
 }
 
 fn main() {
     let dir = std::env::args().nth(1).expect("dossier de sortie");
     let shots = [
-        Shot { name: "tablette-ferme", w: 1920, h: 1200, dp: 1.5, start: false, end: false, help: false },
-        Shot { name: "tablette-deux", w: 1920, h: 1200, dp: 1.5, start: true, end: true, help: false },
-        Shot { name: "tablette-portrait", w: 1200, h: 1920, dp: 1.5, start: true, end: true, help: true },
-        Shot { name: "telephone", w: 2400, h: 1080, dp: 2.5, start: false, end: true, help: false },
+        Shot { name: "tablette-ferme", w: 1920, h: 1200, dp: 1.5, start: false, end: false, help: false, fenetres: false },
+        Shot { name: "tablette-deux", w: 1920, h: 1200, dp: 1.5, start: true, end: true, help: false, fenetres: false },
+        Shot { name: "tablette-portrait", w: 1200, h: 1920, dp: 1.5, start: true, end: true, help: true, fenetres: false },
+        Shot { name: "tablette-fenetres", w: 1920, h: 1200, dp: 1.5, start: false, end: false, help: false, fenetres: true },
+        Shot { name: "telephone", w: 2400, h: 1080, dp: 2.5, start: false, end: true, help: false, fenetres: false },
     ];
     let mut egl = Egl::new(true).expect("EGL");
     egl.attach_pbuffer(2400, 2400).expect("pbuffer");
@@ -43,18 +45,26 @@ fn main() {
         let mut dl = DrawList::default();
         app.shell.start.open = s.start;
         app.shell.end.open = s.end;
+        if s.fenetres {
+            // Trois fenêtres : un cube à gauche, une liste et l'aide à droite
+            use rustine::surface::Sens;
+            app.surface.partager(1, Sens::Colonnes, 0.6);
+            let liste = app.surface.partager(1, Sens::Lignes, 0.55).unwrap();
+            app.surface.changer_vue(liste, rustine::demo::VUE_COULEURS);
+            app.surface.changer_vue(1, rustine::demo::VUE_AIDE);
+        }
 
         let mut scene = None;
         for i in 0..60 {
             if i == 30 && s.help {
                 // Vraie séquence tactile : appui sur la pastille d'aide.
-                let at = (14.0 + 26.0) * s.dp;
-                let x = at + 2.0 * 62.0 * s.dp;
-                ui.event(Event::Down { id: 0, x, y: at + 320.0 * s.dp }, 0.0);
+                let at = (14.0 + 24.0) * s.dp;
+                let x = at + 2.0 * 58.0 * s.dp;
+                ui.event(Event::Down { id: 0, x, y: at + (320.0 + 36.0) * s.dp }, 0.0);
                 ui.event(Event::Up { id: 0 }, 0.05);
             }
             dl.clear();
-            let mut cx = Cx { ui: &mut ui, text: &mut text, dl: &mut dl, dp: s.dp };
+            let mut cx = Cx { ui: &mut ui, text: &mut text, dl: &mut dl, dp: s.dp, theme: Default::default() };
             scene = Some(app.frame(&mut cx, screen, 0.05));
             ui.end_frame();
         }

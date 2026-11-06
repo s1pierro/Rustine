@@ -16,18 +16,23 @@ l'installation depuis une source inconnue.
 ## Fonctions
 
 - Espace de travail qui s'adapte aux panneaux, la 3D suit sa forme
+- Surface de travail partagée en fenêtres, chacune avec sa vue (3D, liste,
+  aide) : glisser sur la barre d'une fenêtre la partage, la poignée du coin la
+  redimensionne, le menu ⋮ change sa vue ou la ferme
+- Vue Paramètres : taille commune des pastilles, pilules, boutons et onglets,
+  arrondi, taille du texte, hauteur des lignes, thème sombre et couleur d'accent
 - Panneaux latéraux à onglets : gauche et droite en paysage, haut et bas en
   portrait, redimensionnables au doigt
 - Pastilles flottantes qui déploient les panneaux
 - Bibliothèque tactile : pilules, onglets, listes défilantes, interrupteurs,
   curseurs et boutons
 - Chaque doigt reste à ce qu'il a touché en premier ; hors des boutons, un doigt
-  tourne la vue, deux doigts zooment et déplacent
+  tourne la vue 3D qu'il touche, deux doigts zooment et déplacent
 - Rien n'est redessiné tant que rien ne bouge
 
 ## Organisation
 
-- `src/ui.rs`, `shell.rs`, `widgets.rs`, `draw.rs`, `text.rs` : l'interface, sans
+- `src/ui.rs`, `shell.rs`, `surface.rs`, `widgets.rs`, `draw.rs`, `text.rs` : l'interface, sans
   aucun appel OpenGL, donc testable partout
 - `src/gles.rs`, `renderer.rs`, `android.rs` : OpenGL ES et Android
 - `src/demo.rs` : l'application de démonstration
