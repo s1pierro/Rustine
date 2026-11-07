@@ -94,6 +94,9 @@ pub enum Icon {
     Close,
     /// Trois points : le menu d'une fenêtre.
     Menu,
+    /// Un cube en perspective : une vue 3D.
+    Cube,
+    Plus,
 }
 
 /// Défilement de chaque zone : position et hauteur du contenu.
@@ -147,6 +150,13 @@ impl Cx<'_> {
         self.label(x, cy, s, size, color);
     }
 
+    /// Texte en police à chasse fixe (lignes d'état), centré verticalement sur `cy`.
+    pub fn mono_at(&mut self, x: f32, cy: f32, s: &str, size: f32, color: Color) {
+        let px = self.px(size);
+        let base = cy + self.text.center_offset(px);
+        self.text.dessiner(self.dl, x, base, s, px, color, true);
+    }
+
     /// Texte calé à droite sur `right`.
     pub fn text_right(&mut self, right: f32, cy: f32, s: &str, size: f32, color: Color) {
         let w = self.measure(s, size);
@@ -185,6 +195,22 @@ impl Cx<'_> {
                 for y in [-6.5, 0.0, 6.5] {
                     self.dl.rrect(Rect::new(cx - 1.7 * u, cy + (y - 1.7) * u, 3.4 * u, 3.4 * u), 1.7 * u, color);
                 }
+            }
+            Icon::Cube => {
+                let (a, b) = (8.7, 5.0);
+                let v = [p(0.0, -10.0), p(a, -b), p(a, b), p(0.0, 10.0), p(-a, b), p(-a, -b)];
+                for i in 0..6 {
+                    self.dl.line(v[i], v[(i + 1) % 6], 1.8 * u, color);
+                }
+                // Les arêtes vues depuis le coin le plus proche
+                let o = p(0.0, 0.0);
+                for k in [1, 3, 5] {
+                    self.dl.line(o, v[k], 1.8 * u, color);
+                }
+            }
+            Icon::Plus => {
+                self.dl.line(p(-8.0, 0.0), p(8.0, 0.0), t, color);
+                self.dl.line(p(0.0, -8.0), p(0.0, 8.0), t, color);
             }
             Icon::Close => {
                 self.dl.line(p(-6.0, -6.0), p(6.0, 6.0), t, color);

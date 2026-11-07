@@ -3,6 +3,7 @@
 
 use crate::draw::{Color, Rect};
 use crate::math::{self, Mat4};
+use crate::reglages::Reglages;
 use crate::shell::{Layout, Shell, Side};
 use crate::surface::{Changement, FenetreId, Placee, Surface};
 use crate::ui::{id, sub_id, Id};
@@ -37,7 +38,7 @@ const AIDE: Id = id("aide-fenetre");
 const PARAMS: Id = id("parametres");
 
 /// Les vues qu'une fenêtre de la surface peut montrer.
-pub const VUES: [&str; 4] = ["Cube", "Couleurs", "Aide", "Paramètres"];
+pub const VUES: [(&str, Icon); 4] = [("Cube", Icon::Cube), ("Couleurs", Icon::List), ("Aide", Icon::Help), ("Paramètres", Icon::Sliders)];
 pub const VUE_CUBE: u32 = 0;
 pub const VUE_COULEURS: u32 = 1;
 pub const VUE_AIDE: u32 = 2;
@@ -81,6 +82,8 @@ pub struct App {
     pub shell: Shell,
     /// L'apparence de l'interface, réglée dans la vue Paramètres.
     pub theme: Theme,
+    /// Où les réglages sont enregistrés, pour l'indiquer dans la vue Paramètres.
+    pub fichier_reglages: Option<String>,
     /// L'espace de travail, partagé en fenêtres.
     pub surface: Surface,
     /// Une caméra par fenêtre 3D.
@@ -101,6 +104,7 @@ impl App {
         App {
             shell: Shell::new(dp),
             theme: Theme::default(),
+            fichier_reglages: None,
             surface: Surface::new(VUE_CUBE),
             cams: HashMap::new(),
             end_content: EndContent::Display,
@@ -127,6 +131,22 @@ impl App {
         } else {
             self.end_content = content;
             self.shell.end.open = true;
+        }
+    }
+
+    /// Les réglages de l'interface à enregistrer : l'apparence et les fenêtres.
+    pub fn reglages(&self) -> Reglages {
+        Reglages { theme: self.theme, fenetres: Some(self.surface.ecrire()) }
+    }
+
+    /// Applique des réglages relus. Une disposition illisible garde les fenêtres.
+    pub fn appliquer(&mut self, r: Reglages) {
+        self.theme = r.theme;
+        if let Some(s) = r.fenetres.as_deref().and_then(Surface::lire) {
+            if s.racine != self.surface.racine {
+                self.surface = s;
+                self.cams.clear();
+            }
         }
     }
 
@@ -163,7 +183,7 @@ impl App {
         }
         // Les pastilles flottent dans la première fenêtre 3D, sinon dans la première
         if let Some(p) = placees.iter().find(|p| p.vue == VUE_CUBE).or(placees.first()) {
-            self.floating(cx, p.contenu);
+            self.floating(cx, p.suite);
         }
         self.surface.dessus(cx, &VUES);
 
@@ -212,7 +232,7 @@ impl App {
                         self.spin = !self.spin;
                     }
                 }
-                format!("1 objet · 12 triangles · fenêtre {}", p.id)
+                format!("1 objet · 12 tri · n°{}", p.id)
             }
             VUE_COULEURS => {
                 cx.dl.rrect(r, 0.0, col.surface);
@@ -235,18 +255,19 @@ impl App {
                 cx.dl.rrect(r, 0.0, col.surface);
                 let mut b = cx.body(sub_id(AIDE, k), r, &self.scrolls);
                 cx.section(&mut b, "FENÊTRES");
-                cx.paragraph(&mut b, "Glissez le doigt sur la barre d'une fenêtre pour la partager : vers le côté, elles se placent côte à côte ; vers le bas, l'une sur l'autre.");
-                cx.paragraph(&mut b, "La poignée du coin bas droit déplace les bords de la fenêtre.");
-                cx.paragraph(&mut b, "Le menu ⋮ choisit ce que montre la fenêtre, ou la ferme.");
+                cx.paragraph(&mut b, "Attrapez la pastille + en haut à gauche d'une fenêtre et glissez-la pour la partager : vers le côté, les fenêtres se placent côte à côte ; vers le haut ou le bas, l'une sur l'autre.");
+                cx.paragraph(&mut b, "La poignée du coin bas droit déplace les bords de la fenêtre : un tiret montre chaque bord qu'elle peut déplacer.");
+                cx.paragraph(&mut b, "Touchez l'icône ou le titre pour choisir ce que montre la fenêtre, ou la fermer.");
                 cx.section(&mut b, "GESTES");
                 cx.paragraph(&mut b, "Un doigt sur une vue 3D la fait tourner ; deux doigts zooment et déplacent.");
                 cx.body_end(b, &mut self.scrolls);
                 "Aide".to_string()
             }
         };
+        // La ligne d'état, à droite du titre, en chasse fixe
         let e = p.etat;
-        cx.clip(Some(Rect::new(e.x, e.y, (e.w - 30.0 * d).max(0.0), e.h)));
-        cx.text_at(e.x + 10.0 * d, e.cy(), &etat, 12.5, col.pale);
+        cx.clip(Some(e));
+        cx.mono_at(e.x + 4.0 * d, e.cy(), &etat, 12.0, col.pale);
         cx.clip(None);
     }
 
@@ -278,13 +299,19 @@ impl App {
         if cx.button(&mut b, sub_id(scroll, 5), "Rétablir l'apparence") {
             *t = Theme::default();
         }
+        cx.section(&mut b, "FICHIER");
+        let ou = match &self.fichier_reglages {
+            Some(f) => format!("Ces réglages sont enregistrés dans {f}, un fichier texte qu'on peut modifier à la main."),
+            None => "Ces réglages ne sont pas enregistrés.".to_string(),
+        };
+        cx.paragraph(&mut b, &ou);
         cx.body_end(b, &mut self.scrolls);
     }
 
-    fn floating(&mut self, cx: &mut Cx, w: Rect) {
-        let d = cx.dp;
-        let (size, gap, m) = (cx.commande(), 10.0 * d, 14.0 * d);
-        let at = |i: f32| (w.x + m + i * (size + gap), w.y + m);
+    /// Les pastilles, à la suite de la pastille + de la fenêtre.
+    fn floating(&mut self, cx: &mut Cx, (x, y): (f32, f32)) {
+        let (size, gap) = (cx.commande(), crate::surface::ECART * cx.dp);
+        let at = |i: f32| (x + i * (size + gap), y);
         let (end, content) = (self.shell.end.open, self.end_content);
         if cx.pastille(OBJECTS, at(0.0).0, at(0.0).1, Icon::List, self.shell.start.open) {
             self.shell.start.toggle();
@@ -485,7 +512,7 @@ mod tests {
 
     // Centre de la n-ième pastille quand aucun panneau n'est ouvert (sous la barre de la fenêtre).
     fn pastille(n: f32) -> (f32, f32) {
-        (1.5 * (14.0 + 24.0 + n * 58.0), 1.5 * (36.0 + 14.0 + 24.0))
+        (1.5 * (14.0 + 24.0 + (n + 1.0) * 58.0), 1.5 * (14.0 + 24.0))
     }
 
     #[test]
@@ -493,8 +520,8 @@ mod tests {
         let mut r = Rig::new();
         r.app.theme.commande = 60.0;
         r.frames(1);
-        // La première pastille fait 60 dp : son centre est plus loin, sous une barre plus haute
-        let (x, y) = (1.5 * (14.0 + 30.0), 1.5 * (45.0 + 14.0 + 30.0));
+        // Les pastilles font 60 dp : la première, après le +, est plus loin du coin
+        let (x, y) = (1.5 * (14.0 + 60.0 + 10.0 + 30.0), 1.5 * (14.0 + 30.0));
         r.tap(x, y);
         assert!(r.app.shell.start.open);
     }
@@ -546,6 +573,23 @@ mod tests {
         r.ui.event(Event::Move { id: 0, x: 1100., y: 600. }, 0.1);
         r.frames(1);
         assert!(r.app.cam(1).yaw < yaw);
+    }
+
+    #[test]
+    fn la_poignee_redimensionne_dans_la_demo() {
+        let mut r = Rig::new();
+        r.app.surface.partager(1, crate::surface::Sens::Colonnes, 0.5);
+        r.frames(1);
+        // La poignée de la fenêtre de gauche : 54 px de côté, dans son coin bas droit
+        r.ui.event(Event::Down { id: 0, x: 933., y: 1173. }, 0.0);
+        r.frames(1);
+        for k in 1..=10 {
+            r.ui.event(Event::Move { id: 0, x: 933. + 30. * k as f32, y: 1173. }, 0.1);
+            r.frames(1);
+        }
+        r.ui.event(Event::Up { id: 0 }, 0.2);
+        let s = r.frames(2);
+        assert!((s.vues[0].rect.w - 1260.).abs() <= 1.0, "{:?}", s.vues[0].rect);
     }
 
     #[test]

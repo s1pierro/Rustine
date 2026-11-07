@@ -272,6 +272,11 @@ impl Ui {
         self.drags.get(&id).copied()
     }
 
+    /// Le nombre de doigts posés.
+    pub fn doigts(&self) -> usize {
+        self.pointers.len()
+    }
+
     pub fn pressed(&self, id: Id) -> bool {
         self.pointers.iter().any(|p| p.owner == Owner::Widget(id))
     }

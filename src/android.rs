@@ -8,12 +8,15 @@
 use crate::demo::App;
 use crate::draw::{DrawList, Rect};
 use crate::gles::{load_gl, Egl};
+use crate::reglages::{Fichier, NOM};
 use crate::renderer::Renderer;
 use crate::text::Text;
 use crate::ui::{Event, Ui};
 use crate::widgets::Cx;
-use std::ffi::{c_void, CString};
+use std::ffi::{c_void, CStr, CString};
+use std::path::PathBuf;
 use std::ptr::null_mut;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Condvar, Mutex, Once, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -117,11 +120,19 @@ struct Shared {
     redraw: bool,
     events: Vec<(Event, f64)>,
     dp: f32,
+    /// Le dossier de l'application : les réglages de l'interface y vivent tant que
+    /// l'accès à tous les fichiers n'est pas accordé.
+    dossier: Option<PathBuf>,
+    /// L'accès à tous les fichiers est accordé, et la racine du stockage partagé.
+    acces: bool,
+    racine: Option<PathBuf>,
+    /// Relire les réglages (retour dans l'application, accès changé).
+    relire: bool,
 }
 unsafe impl Send for Shared {}
 
 static SHARED: Mutex<Shared> =
-    Mutex::new(Shared { window: null_mut(), window_changed: false, released: true, redraw: false, events: Vec::new(), dp: 1.0 });
+    Mutex::new(Shared { window: null_mut(), window_changed: false, released: true, redraw: false, events: Vec::new(), dp: 1.0, dossier: None, acces: false, racine: None, relire: true });
 static WAKE: Condvar = Condvar::new();
 static START: OnceLock<Instant> = OnceLock::new();
 
@@ -149,9 +160,11 @@ fn render_loop() -> Result<(), String> {
     let mut dl = DrawList::default();
     let mut last = Instant::now();
     let mut again = false; // la dernière image demande à être suivie d'une autre
+    let mut fichier: Option<Fichier> = None;
+    let mut relire = true;
 
     loop {
-        let (window, changed, events, dp) = {
+        let (window, changed, events, dp, chemin) = {
             let mut s = SHARED.lock().unwrap();
             loop {
                 let drawing = !egl.surface.is_null();
@@ -163,8 +176,20 @@ fn render_loop() -> Result<(), String> {
             }
             s.redraw = false;
             let changed = std::mem::take(&mut s.window_changed);
-            (s.window, changed, std::mem::take(&mut s.events), s.dp)
+            relire |= std::mem::take(&mut s.relire);
+            // Les réglages : dans le stockage partagé si l'accès est accordé, sinon dans
+            // le dossier de l'application
+            let chemin = match (&s.racine, s.acces) {
+                (Some(r), true) => Some(r.join("Rustine").join(NOM)),
+                _ => s.dossier.as_ref().map(|d| d.join(NOM)),
+            };
+            (s.window, changed, std::mem::take(&mut s.events), s.dp, chemin)
         };
+        if fichier.as_ref().map(|f| &f.chemin) != chemin.as_ref() {
+            // Le nouveau fichier part des réglages actuels s'il n'existe pas encore
+            fichier = chemin.map(Fichier::new);
+            relire = true;
+        }
         again = false;
 
         if changed {
@@ -181,11 +206,19 @@ fn render_loop() -> Result<(), String> {
                 renderer = Some(Renderer::new(api)?);
             }
             last = Instant::now();
+            // Au retour dans l'application, les réglages ont pu être modifiés à la main
+            relire = true;
         }
         if egl.surface.is_null() {
             continue;
         }
         let (Some(render), (app, ui)) = (renderer.as_ref(), app.get_or_insert_with(|| (App::new(dp), Ui::new(dp)))) else { continue };
+        if std::mem::take(&mut relire) {
+            if let Some(r) = fichier.as_mut().and_then(|f| f.relire()) {
+                app.appliquer(r);
+            }
+            app.fichier_reglages = fichier.as_ref().map(|f| f.chemin.display().to_string());
+        }
 
         for (e, t) in events {
             ui.event(e, t);
@@ -198,6 +231,14 @@ fn render_loop() -> Result<(), String> {
         let mut cx = Cx { ui, text: &mut text, dl: &mut dl, dp, theme: Default::default() };
         let scene = app.frame(&mut cx, Rect::new(0.0, 0.0, w, h), dt);
         ui.end_frame();
+        // Les réglages changés s'enregistrent une fois le doigt levé, pas à chaque pas
+        // d'un curseur
+        if ui.doigts() == 0 {
+            if let Some(Err(e)) = fichier.as_mut().map(|f| f.suivre(&app.reglages())) {
+                log(&format!("réglages non enregistrés : {e}"));
+                fichier = None;
+            }
+        }
         render.draw(w, h, &scene, &dl, &mut text);
         egl.swap();
         // Après une rotation, la nouvelle taille n'est connue qu'ici ; et un appui change
@@ -279,6 +320,23 @@ unsafe extern "C" fn on_input(_fd: i32, _events: i32, data: *mut c_void) -> i32 
     1
 }
 
+/// Au premier plan : l'accès à tous les fichiers est-il accordé ? Sinon, il est demandé
+/// une fois par lancement. La réponse arrive au retour suivant.
+unsafe extern "C" fn on_resume(activity: *mut ANativeActivity) {
+    static DEMANDE: AtomicBool = AtomicBool::new(false);
+    let a = &*activity;
+    let acces = crate::acces::accorde(a.env, a.clazz, a.sdk_version);
+    if !acces && !DEMANDE.swap(true, Ordering::Relaxed) && !crate::acces::demander(a.env, a.clazz, a.sdk_version) {
+        log("accès à tous les fichiers : demande impossible");
+    }
+    let racine = crate::acces::racine(a.env).map(PathBuf::from);
+    let mut s = SHARED.lock().unwrap();
+    s.acces = acces;
+    s.racine = racine.or_else(|| Some(PathBuf::from("/storage/emulated/0")));
+    s.relire = true;
+    WAKE.notify_all();
+}
+
 unsafe extern "C" fn on_queue_created(_: *mut ANativeActivity, queue: *mut AInputQueue) {
     AInputQueue_attachLooper(queue, ALooper_forThread(), 1, Some(on_input), queue);
 }
@@ -307,8 +365,15 @@ unsafe fn density(activity: *mut ANativeActivity) -> f32 {
 /// Appelé uniquement par Android, avec une activité valide.
 #[no_mangle]
 pub unsafe extern "C" fn ANativeActivity_onCreate(activity: *mut ANativeActivity, _: *mut c_void, _: usize) {
-    SHARED.lock().unwrap().dp = density(activity);
+    let mut s = SHARED.lock().unwrap();
+    s.dp = density(activity);
+    // Le dossier externe de l'application, qu'on peut ouvrir depuis un gestionnaire de
+    // fichiers ; à défaut, le dossier interne
+    let dossier = |p: *const i8| (!p.is_null()).then(|| PathBuf::from(CStr::from_ptr(p as *const _).to_string_lossy().into_owned()));
+    s.dossier = dossier((*activity).external_data_path).or_else(|| dossier((*activity).internal_data_path));
+    drop(s);
     let cb = &mut *(*activity).callbacks;
+    cb.on_resume = Some(on_resume);
     cb.on_native_window_created = Some(on_window_created);
     cb.on_native_window_redraw_needed = Some(on_window_changed);
     cb.on_native_window_resized = Some(on_window_changed);

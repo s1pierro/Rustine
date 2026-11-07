@@ -5,11 +5,13 @@
 //!   OpenGL, donc testable sur n'importe quelle machine ;
 //! - `demo` : l'application de démonstration.
 
+pub mod acces;
 pub mod android;
 pub mod demo;
 pub mod draw;
 pub mod gles;
 pub mod math;
+pub mod reglages;
 pub mod renderer;
 pub mod shell;
 pub mod surface;

@@ -4,17 +4,22 @@
 //! - La surface est un arbre : une fenêtre, ou un partage en deux (côte à côte ou l'une
 //!   sur l'autre) selon une proportion. Chaque fenêtre a un identifiant stable, et une
 //!   vue que l'application interprète (3D, liste, texte…).
-//! - Chaque fenêtre a une barre en haut (son titre, son menu) et une barre d'état en bas
-//!   (une ligne pour l'application, une poignée dans le coin).
-//! - **Partager** : glisser le doigt sur la barre du haut. Au-delà d'un seuil, le partage
+//! - Chaque fenêtre a une seule barre, en bas : l'icône et le titre de sa vue, à la
+//!   couleur d'accent, puis la ligne d'état laissée à l'application (en chasse fixe), et
+//!   la poignée dans le coin.
+//! - **Partager** : attraper la pastille + (en haut à gauche de chaque fenêtre, devant
+//!   les pastilles de l'application, qui commencent à `Placee::suite`) et la
+//!   glisser. Au-delà d'un seuil, le partage
 //!   s'engage, côte à côte si le geste est plutôt horizontal, l'une sur l'autre sinon.
 //!   Un aperçu suit le doigt, et la fenêtre se coupe au lâcher. La nouvelle fenêtre
 //!   prend la part de l'aperçu (de bord jusqu'au doigt), avec la même vue ; l'ancienne
 //!   garde le reste.
 //! - **Redimensionner** : tirer la poignée du coin. Elle déplace le bord droit et le bord
 //!   bas de la fenêtre (les partages les plus proches qui les portent), de 10 à 90 %.
-//! - **Fermer** : par le menu. La fenêtre voisine reprend la place.
-//! - **Menu** : le choix de la vue de la fenêtre, et la fermeture.
+//!   Elle montre toujours un point, et un tiret le long de chaque bord qu'elle peut
+//!   déplacer : les deux ensemble forment un chevron.
+//! - **Menu** : toucher l'icône ou le titre ouvre le choix de la vue, et la fermeture.
+//!   La fenêtre voisine reprend la place d'une fenêtre fermée.
 //!
 //! L'application appelle `frame` (disposition, barres, gestes) avant de dessiner le
 //! contenu des fenêtres, puis `dessus` (aperçu du partage, menu), qui passe au-dessus de
@@ -28,22 +33,22 @@ use crate::widgets::{Cx, Icon};
 /// L'identifiant stable d'une fenêtre.
 pub type FenetreId = u64;
 
-/// Hauteur des barres et des lignes du menu, en part de la taille des commandes du
-/// thème ; seuil du geste de partage (dp), côté de la poignée (dp).
+/// Hauteur de la barre et des lignes du menu, en part de la taille des commandes du
+/// thème ; seuil du geste de partage (dp).
 const BARRE: f32 = 0.75;
-const ETAT: f32 = 0.5;
 const MENU_LIGNE: f32 = 0.875;
 const SEUIL: f32 = 64.0;
-const POIGNEE: f32 = 28.0;
 const MENU_LARGE: f32 = 220.0;
+/// Marge des pastilles au coin de la fenêtre, et écart entre elles (dp).
+pub const MARGE: f32 = 14.0;
+pub const ECART: f32 = 10.0;
 /// Bornes d'une proportion.
 const MIN: f32 = 0.1;
 const MAX: f32 = 0.9;
 
-const BARRE_ID: Id = id("surface/barre");
-const MENU_ID: Id = id("surface/menu");
+const PLUS_ID: Id = id("surface/plus");
+const TITRE_ID: Id = id("surface/titre");
 const POIGNEE_ID: Id = id("surface/poignee");
-const ETAT_ID: Id = id("surface/etat");
 const FOND_MENU: Id = id("surface/fond-menu");
 const LIGNE_MENU: Id = id("surface/ligne-menu");
 
@@ -61,15 +66,20 @@ pub enum Noeud {
     Partage { sens: Sens, ratio: f32, a: Box<Noeud>, b: Box<Noeud> },
 }
 
-/// Une fenêtre à l'écran : tout son cadre, son contenu (entre les barres) et la ligne
-/// d'état laissée à l'application.
+/// Une fenêtre à l'écran : tout son cadre, son contenu (au-dessus de la barre), sa
+/// barre, le titre dans la barre et la ligne d'état laissée à l'application, à droite
+/// du titre.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Placee {
     pub id: FenetreId,
     pub vue: u32,
     pub cadre: Rect,
     pub contenu: Rect,
+    pub barre: Rect,
+    pub titre: Rect,
     pub etat: Rect,
+    /// Où placer la première pastille de l'application : juste après la pastille +.
+    pub suite: (f32, f32),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -369,35 +379,108 @@ impl Surface {
         s.is_empty().then(|| Surface::de(racine))
     }
 
-    /// Dispose les fenêtres dans `r`, dessine leurs barres et suit les gestes. `noms` :
-    /// le nom de chaque vue, pour les titres et le menu. À appeler avant le contenu.
-    pub fn frame(&mut self, cx: &mut Cx, r: Rect, noms: &[&str]) -> Vec<Placee> {
+    /// Dispose les fenêtres dans `r`, dessine leurs barres et suit les gestes. `vues` :
+    /// le nom et l'icône de chaque vue, pour les titres et le menu. À appeler avant le
+    /// contenu.
+    pub fn frame(&mut self, cx: &mut Cx, r: Rect, vues: &[(&str, Icon)]) -> Vec<Placee> {
         let (d, col) = (cx.dp, cx.couleurs());
-        let h = cx.commande();
-        let (barre, etat, poignee) = ((BARRE * h).round(), (ETAT * h).round(), POIGNEE * d);
+        let fil = d.max(1.0);
+        let hb = (BARRE * cx.commande()).round();
         self.rect = r;
-        self.placees = self
-            .disposer(r)
-            .into_iter()
-            .map(|(id, vue, c)| {
-                let b = barre.min(c.h / 2.0);
-                let e = etat.min((c.h - b) / 2.0);
-                Placee { id, vue, cadre: c, contenu: Rect::new(c.x, c.y + b, c.w, (c.h - b - e).max(0.0)), etat: Rect::new(c.x, c.bottom() - e, c.w, e) }
-            })
-            .collect();
+        let cadres = self.disposer(r);
+        self.placees.clear();
+        // Le geste de partage se suit dans `dessus`, où la pastille + est déclarée
         if let Some(g) = &mut self.geste {
             g.vu = false;
         }
         let mut tire = false;
+        for (id, vue, c) in cadres {
+            let k = id as usize;
+            let (nom, icone) = vues.get(vue as usize).copied().unwrap_or(("?", Icon::Help));
+            // La barre, en bas : titre, état, poignée
+            let bh = hb.min(c.h / 2.0);
+            let b = Rect::new(c.x, c.bottom() - bh, c.w, bh);
+            let ic = (bh * 0.6).round();
+            let tw = cx.measure(nom, 14.0);
+            let poignee = Rect::new((b.right() - bh).max(b.x), b.y, bh.min(b.w), bh);
+            let titre = Rect::new(b.x, b.y, (8.0 * d + ic + 6.0 * d + tw + 10.0 * d).min(poignee.x - b.x), bh);
+            let etat = Rect::new(titre.right(), b.y, (poignee.x - titre.right()).max(0.0), bh);
+            let h = cx.commande();
+            let suite = (c.x + MARGE * d + h + ECART * d, c.y + MARGE * d);
+            let p = Placee { id, vue, cadre: c, contenu: Rect::new(c.x, c.y, c.w, c.h - bh), barre: b, titre, etat, suite };
+            self.placees.push(p);
+
+            cx.dl.rrect(b, 0.0, col.surface);
+            cx.dl.rrect(Rect::new(b.x, b.y, b.w, fil), 0.0, col.ligne);
+            // Toucher l'icône ou le titre ouvre le menu
+            let tk = sub_id(TITRE_ID, k);
+            cx.ui.region_add(tk, titre, Sense::Click { scroll: None });
+            if cx.ui.clicked(tk) {
+                self.menu = if self.menu == Some(id) { None } else { Some(id) };
+            }
+            let ouvert = self.menu == Some(id);
+            if ouvert || cx.ui.pressed(tk) {
+                cx.dl.rrect(titre.inset(3.0 * d), cx.theme.rayon(titre.h - 6.0 * d), col.puce);
+            }
+            cx.clip(Some(Rect::new(b.x, b.y, poignee.x - b.x, bh)));
+            cx.icon(Rect::new(b.x + 8.0 * d, b.cy() - ic / 2.0, ic, ic), icone, col.accent);
+            cx.text_at(b.x + 8.0 * d + ic + 6.0 * d, b.cy(), nom, 14.0, col.accent);
+            cx.clip(None);
+
+            // La poignée : un point, et un tiret le long de chaque bord qu'elle déplace
+            let (px, pl) = self.racine.prises(id).unwrap_or((false, false));
+            let pk = sub_id(POIGNEE_ID, k);
+            if px || pl {
+                if let Some(g) = cx.ui.drag(pk, poignee) {
+                    let (_, ox, oy) = *self.tirage.get_or_insert((id, c.right() - g.x, c.bottom() - g.y));
+                    if g.moved && self.tirage.is_some_and(|t| t.0 == id) {
+                        tire = true;
+                        let (x, y) = (if px { g.x + ox } else { 0.0 }, if pl { g.y + oy } else { 0.0 });
+                        self.racine.tirer(r, id, x, y, hb + 16.0 * d, &mut (!px, !pl));
+                        self.modifiee = true;
+                    }
+                }
+            }
+            let couleur = if cx.ui.pressed(pk) {
+                col.accent
+            } else if px || pl {
+                col.texte
+            } else {
+                let [r, g, b, _] = col.pale;
+                [r, g, b, 110]
+            };
+            let (q, t) = (poignee.inset(bh * 0.22), 2.0 * d);
+            let rd = 2.6 * d;
+            cx.dl.rrect(Rect::new(q.cx() - rd, q.cy() - rd, 2.0 * rd, 2.0 * rd), rd, couleur);
+            if px {
+                cx.dl.line([q.right(), q.y], [q.right(), q.bottom()], t, couleur);
+            }
+            if pl {
+                cx.dl.line([q.x, q.bottom()], [q.right(), q.bottom()], t, couleur);
+            }
+            // La séparation à droite, sauf au bord de la surface
+            if c.right() < r.right() - 0.5 {
+                cx.dl.rrect(Rect::new(c.right() - fil, c.y, fil, c.h), 0.0, col.ligne);
+            }
+        }
+        if !tire && !self.placees.iter().any(|p| cx.ui.pressed(sub_id(POIGNEE_ID, p.id as usize))) {
+            self.tirage = None;
+        }
+        self.placees.clone()
+    }
+
+    /// La pastille + de chaque fenêtre, l'aperçu du partage et le menu ouvert,
+    /// par-dessus le contenu des fenêtres.
+    pub fn dessus(&mut self, cx: &mut Cx, vues: &[(&str, Icon)]) {
+        let (d, col) = (cx.dp, cx.couleurs());
+        // La pastille + : on l'attrape et on la glisse pour partager la fenêtre
+        let taille = cx.commande();
+        let mut plus = Vec::new();
         for p in self.placees.clone() {
-            let c = p.cadre;
-            let k = p.id as usize;
-            // La barre du haut : le titre, le menu, et le geste de partage
-            let bh = p.contenu.y - c.y;
-            let barre_r = Rect::new(c.x, c.y, c.w, bh);
-            cx.dl.rrect(barre_r, 0.0, col.surface);
-            cx.dl.rrect(Rect::new(c.x, barre_r.bottom() - d.max(1.0), c.w, d.max(1.0)), 0.0, col.ligne);
-            if let Some(g) = cx.ui.drag(sub_id(BARRE_ID, k), barre_r) {
+            let c = p.contenu;
+            let r = Rect::new(c.x + MARGE * d, c.y + MARGE * d, taille, taille);
+            let pk = sub_id(PLUS_ID, p.id as usize);
+            if let Some(g) = cx.ui.drag(pk, r) {
                 let geste = self.geste.get_or_insert(Geste { fenetre: p.id, depart: (g.x, g.y), doigt: (g.x, g.y), sens: None, vu: true });
                 if geste.fenetre == p.id {
                     geste.doigt = (g.x, g.y);
@@ -408,51 +491,9 @@ impl Surface {
                     }
                 }
             }
-            let menu_r = Rect::new(c.right() - bh, c.y, bh, bh);
-            if cx.ui.click(sub_id(MENU_ID, k), menu_r, None) {
-                self.menu = if self.menu == Some(p.id) { None } else { Some(p.id) };
-            }
-            let ouvert = self.menu == Some(p.id);
-            if ouvert || cx.ui.pressed(sub_id(MENU_ID, k)) {
-                cx.dl.rrect(menu_r.inset(4.0 * d), 6.0 * d, col.puce);
-            }
-            cx.icon(menu_r.inset(bh * 0.25), Icon::Menu, if ouvert { col.accent } else { col.pale });
-            let titre = noms.get(p.vue as usize).copied().unwrap_or("?");
-            cx.clip(Some(Rect::new(c.x, c.y, (c.w - bh).max(0.0), bh)));
-            cx.text_at(c.x + 10.0 * d, barre_r.cy(), titre, 14.0, col.texte);
-            cx.clip(None);
-            // La barre d'état, et sa poignée
-            let e = p.etat;
-            cx.ui.region_add(sub_id(ETAT_ID, k), e, Sense::Sink);
-            cx.dl.rrect(e, 0.0, col.fond);
-            cx.dl.rrect(Rect::new(c.x, e.y, c.w, d.max(1.0)), 0.0, col.ligne);
-            if let Some((px, pl)) = self.racine.prises(p.id).filter(|(x, y)| *x || *y) {
-                let pr = Rect::new(c.right() - poignee, c.bottom() - poignee.min(e.h.max(1.0) + 4.0 * d), poignee, poignee.min(e.h.max(1.0) + 4.0 * d));
-                let pk = sub_id(POIGNEE_ID, k);
-                if let Some(g) = cx.ui.drag(pk, pr) {
-                    let (_, ox, oy) = *self.tirage.get_or_insert((p.id, c.right() - g.x, c.bottom() - g.y));
-                    if g.moved && self.tirage.is_some_and(|t| t.0 == p.id) {
-                        tire = true;
-                        let (x, y) = (if px { g.x + ox } else { 0.0 }, if pl { g.y + oy } else { 0.0 });
-                        self.racine.tirer(r, p.id, x, y, barre + etat + 16.0 * d, &mut (!px, !pl));
-                        self.modifiee = true;
-                    }
-                }
-                let couleur = if cx.ui.pressed(pk) { col.accent } else { col.pale };
-                let (bx, by) = (c.right() - 6.0 * d, c.bottom() - 5.0 * d);
-                for k in [7.0, 12.0] {
-                    cx.dl.line([bx - k * d, by], [bx, by - k * d], 1.6 * d, couleur);
-                }
-            }
-            // Les séparations, à droite et en bas, sauf au bord de la surface
-            if c.right() < r.right() - 0.5 {
-                cx.dl.rrect(Rect::new(c.right() - d.max(1.0), c.y, d.max(1.0), c.h), 0.0, col.ligne);
-            }
+            plus.push((r, cx.ui.pressed(pk)));
         }
-        if !tire && !self.placees.iter().any(|p| cx.ui.pressed(sub_id(POIGNEE_ID, p.id as usize))) {
-            self.tirage = None;
-        }
-        // Le doigt a quitté la barre : le partage se fait, s'il était engagé
+        // Le doigt a lâché la pastille : le partage se fait, s'il était engagé
         if let Some(g) = self.geste.filter(|g| !g.vu) {
             self.geste = None;
             if let (Some(sens), Some(p)) = (g.sens, self.placees.iter().find(|p| p.id == g.fenetre)) {
@@ -464,12 +505,6 @@ impl Surface {
                 self.partager(g.fenetre, sens, ratio);
             }
         }
-        self.placees.clone()
-    }
-
-    /// L'aperçu du partage et le menu ouvert, par-dessus le contenu des fenêtres.
-    pub fn dessus(&mut self, cx: &mut Cx, noms: &[&str]) {
-        let (d, col) = (cx.dp, cx.couleurs());
         if let Some(g) = self.geste {
             if let (Some(sens), Some(p)) = (g.sens, self.placees.iter().find(|p| p.id == g.fenetre)) {
                 let c = p.cadre;
@@ -487,6 +522,12 @@ impl Surface {
                 cx.dl.rrect(bord, 0.0, col.accent);
             }
         }
+        for (r, appui) in plus {
+            let rayon = cx.theme.rayon(r.h);
+            cx.dl.shadow(Rect::new(r.x, r.y + 2.0 * d, r.w, r.h), rayon, 8.0 * d, col.ombre);
+            cx.dl.rrect(r, rayon, if appui { col.accent } else { col.surface });
+            cx.icon(r.inset(r.w * 0.2), Icon::Plus, if appui { col.sur_accent } else { col.accent });
+        }
         let Some(p) = self.menu.and_then(|f| self.placees.iter().find(|p| p.id == f).copied()) else {
             self.menu = None;
             return;
@@ -497,15 +538,17 @@ impl Surface {
             return;
         }
         let fermer = self.nombre() > 1;
-        let lignes = noms.len() + fermer as usize;
+        let lignes = vues.len() + fermer as usize;
         let (w, lh) = ((MENU_LARGE * d * cx.theme.texte).min(self.rect.w), (MENU_LIGNE * cx.commande()).round());
         let h = lh * lignes as f32 + 8.0 * d;
-        let x = (p.cadre.right() - w - 4.0 * d).max(self.rect.x);
-        let y = (p.contenu.y + 2.0 * d).min(self.rect.bottom() - h).max(self.rect.y);
+        // Au-dessus du titre, qui l'a ouvert
+        let x = (p.titre.x + 4.0 * d).min(self.rect.right() - w).max(self.rect.x);
+        let y = (p.barre.y - h - 2.0 * d).max(self.rect.y);
         let m = Rect::new(x, y, w, h);
         cx.ui.region_add(id("surface/menu-fond"), m, Sense::Sink);
         cx.dl.shadow(Rect::new(m.x, m.y + 2.0 * d, m.w, m.h), 10.0 * d, 10.0 * d, col.ombre);
         cx.dl.rrect(m, 10.0 * d, col.surface);
+        let ic = (lh * 0.5).round();
         for i in 0..lignes {
             let l = Rect::new(m.x + 4.0 * d, m.y + 4.0 * d + i as f32 * lh, m.w - 8.0 * d, lh);
             let k = sub_id(LIGNE_MENU, i);
@@ -513,9 +556,11 @@ impl Surface {
             if cx.ui.pressed(k) {
                 cx.dl.rrect(l, 8.0 * d, col.puce);
             }
-            if i < noms.len() {
+            if let Some((nom, icone)) = vues.get(i).copied() {
                 let actuelle = i as u32 == p.vue;
-                cx.text_at(l.x + 12.0 * d, l.cy(), noms[i], 15.0, if actuelle { col.accent } else { col.texte });
+                let teinte = if actuelle { col.accent } else { col.texte };
+                cx.icon(Rect::new(l.x + 10.0 * d, l.cy() - ic / 2.0, ic, ic), icone, if actuelle { col.accent } else { col.pale });
+                cx.text_at(l.x + 18.0 * d + ic, l.cy(), nom, 15.0, teinte);
                 if clic {
                     self.menu = None;
                     if !actuelle {
@@ -524,7 +569,8 @@ impl Surface {
                 }
             } else {
                 cx.dl.rrect(Rect::new(l.x + 8.0 * d, l.y, l.w - 16.0 * d, d.max(1.0)), 0.0, col.ligne);
-                cx.text_at(l.x + 12.0 * d, l.cy(), "Fermer la fenêtre", 15.0, col.pale);
+                cx.icon(Rect::new(l.x + 10.0 * d, l.cy() - ic / 2.0, ic, ic).inset(ic * 0.1), Icon::Close, col.pale);
+                cx.text_at(l.x + 18.0 * d + ic, l.cy(), "Fermer la fenêtre", 15.0, col.pale);
                 if clic {
                     self.fermer(p.id);
                 }
@@ -541,7 +587,7 @@ mod tests {
     use crate::ui::{Event, Ui};
 
     const R: Rect = Rect::new(0., 0., 1000., 800.);
-    const NOMS: [&str; 2] = ["3D", "Liste"];
+    const NOMS: [(&str, Icon); 2] = [("3D", Icon::Cube), ("Liste", Icon::List)];
 
     struct Banc {
         s: Surface,
@@ -651,21 +697,22 @@ mod tests {
     }
 
     #[test]
-    fn glisser_sur_la_barre_partage_la_fenetre() {
+    fn glisser_la_pastille_plus_partage_la_fenetre() {
         let mut b = Banc::new();
         // Vers la droite sur la barre : côte à côte, la nouvelle jusqu'au doigt
-        b.glisser((100., 15.), (400., 30.));
+        // (la pastille + est en haut à gauche : centre à 14 + 24 des bords)
+        b.glisser((38., 38.), (400., 50.));
         let p = b.image();
         assert_eq!(p.len(), 2);
         assert_eq!(p[0].cadre, Rect::new(0., 0., 400., 800.));
         assert_eq!(p[0].id, 2);
-        // Vers le bas sur la barre de droite : l'une sur l'autre
-        b.glisser((700., 15.), (700., 300.));
+        // Vers le bas avec la pastille de droite : l'une sur l'autre
+        b.glisser((438., 38.), (438., 300.));
         let p = b.image();
         assert_eq!(p.len(), 3);
         assert_eq!(p[1].cadre, Rect::new(400., 0., 600., 300.));
         // Un geste trop court ne partage pas
-        b.glisser((100., 15.), (130., 15.));
+        b.glisser((438., 38.), (468., 38.));
         assert_eq!(b.image().len(), 3);
     }
 
@@ -675,24 +722,38 @@ mod tests {
         b.s.partager(1, Sens::Colonnes, 0.5);
         b.image();
         b.changements();
-        // Le menu de la fenêtre de droite, puis « Liste »
-        b.toucher(1000. - 18., 18.);
+        // Le titre de la fenêtre de droite ouvre le menu, au-dessus de la barre
+        b.toucher(520., 785.);
         assert_eq!(b.s.menu, Some(1));
-        let y = 36. + 2. + 4. + 42. * 1.5;
-        b.toucher(900., y);
+        // Trois lignes de 42 : le menu commence à 764 - 134 - 2, ses lignes 4 plus bas
+        let ligne = |i: f32| 628. + 4. + 42. * (i + 0.5);
+        b.toucher(600., ligne(1.));
         assert_eq!(b.s.vue(1), Some(1));
         assert_eq!(b.s.menu, None);
         // Puis « Fermer la fenêtre »
-        b.toucher(1000. - 18., 18.);
-        b.toucher(900., 36. + 2. + 4. + 42. * 2.5);
+        b.toucher(520., 785.);
+        b.toucher(600., ligne(2.));
         assert_eq!(b.s.nombre(), 1);
         assert_eq!(b.s.changements(), vec![Changement::Vue { id: 1, vue: 1 }, Changement::Fermee(1)]);
         // Toucher à côté referme le menu sans rien changer
-        b.toucher(1000. - 18., 18.);
+        b.toucher(20., 785.);
         assert!(b.s.menu.is_some());
-        b.toucher(100., 600.);
+        b.toucher(900., 100.);
         assert_eq!(b.s.menu, None);
         assert_eq!(b.s.nombre(), 1);
+    }
+
+    #[test]
+    fn la_barre_porte_titre_etat_et_poignee() {
+        let mut b = Banc::new();
+        b.s.partager(1, Sens::Colonnes, 0.5);
+        let p = b.image();
+        assert_eq!(p[0].contenu, Rect::new(0., 0., 500., 764.));
+        assert_eq!(p[0].barre, Rect::new(0., 764., 500., 36.));
+        assert_eq!(p[0].titre.x, 0.);
+        assert_eq!(p[0].etat.x, p[0].titre.right());
+        assert_eq!(p[0].etat.right(), 464.);
+        assert_eq!(p[1].suite, (500. + 14. + 48. + 10., 14.));
     }
 
     #[test]
