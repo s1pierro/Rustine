@@ -17,7 +17,7 @@ l'installation depuis une source inconnue.
 
 - Espace de travail qui s'adapte aux panneaux, la 3D suit sa forme
 - Surface de travail partagée en fenêtres, chacune avec sa vue (3D, liste,
-  aide, paramètres) et une seule barre en bas : icône et titre de la vue, ligne
+  aide, paramètres, radio) et une seule barre en bas : icône et titre de la vue, ligne
   d'état, poignée. Glisser la pastille + partage la fenêtre, toucher le titre
   change sa vue ou la ferme, la poignée la redimensionne et montre par un tiret
   chaque bord qu'elle peut déplacer
@@ -32,8 +32,21 @@ l'installation depuis une source inconnue.
 - Réglages de l'interface et disposition des fenêtres conservés dans un fichier
   texte modifiable à la main, `Rustine/interface.txt` à la racine du stockage
   partagé, relu au retour dans l'application
-- Accès à tous les fichiers demandé au lancement (JNI, sans code Java) ; refusé,
+- Accès à tous les fichiers demandé au lancement (par JNI) ; refusé,
   les réglages restent dans le dossier privé de l'application
+- Son par AAudio et décodage par `libmediandk`, tous deux chargés à l'exécution :
+  la vue Radio lit un flux web (MP3, AAC, Ogg… en HTTP ou HTTPS), avec volume, et
+  garde les derniers flux écoutés dans `Rustine/radios.txt`, à côté des réglages
+- Mixeur : une seule sortie AAudio où se mélangent des voies, chacune à la
+  fréquence de sa source (convertie à celle de l'appareil) ; par piste, volume,
+  balance, muet, solo et priorité (une piste prioritaire qui sonne baisse les
+  autres) ; gains en fondu, limiteur doux, vumètres ; la vue Radio en montre le
+  tableau, avec une voie d'essai générée
+- Lecture en arrière-plan de tout ce que joue le mixeur, par un service Java au
+  premier plan (le seul code Java de Rustine) : chaque source s'annonce (titre,
+  état) à la notification et aux commandes média du système ; Pause suspend le
+  mixeur sans rien perdre (un direct coupe et relance son flux), Fermer arrête
+  toutes les sources ; appareil et Wi-Fi tenus éveillés pendant la lecture
 - Panneaux latéraux à onglets : gauche et droite en paysage, haut et bas en
   portrait, redimensionnables au doigt
 - Barre de l'application en bas de l'écran, là où le système réserve les gestes
@@ -50,11 +63,13 @@ l'installation depuis une source inconnue.
 - `src/ui.rs`, `shell.rs`, `surface.rs`, `widgets.rs`, `clavier.rs`, `reglages.rs`, `draw.rs`, `text.rs` : l'interface, sans
   aucun appel OpenGL, donc testable partout
 - `src/gles.rs`, `renderer.rs`, `android.rs`, `acces.rs` : OpenGL ES et Android
+- `src/audio.rs`, `mixage.rs`, `radio.rs` : AAudio, le mixeur et la lecture de flux
+  (`libmediandk`) ; `java/…/Lecture.java` : le service de lecture
 - `src/demo.rs` : l'application de démonstration
 - `examples/apercu.rs` : dessine l'interface hors écran sur le processeur
   graphique de l'appareil et écrit des images
 
-OpenGL est chargé à l'exécution avec `dlopen`. La seule dépendance Rust est
+OpenGL, AAudio et `libmediandk` sont chargés à l'exécution avec `dlopen`. La seule dépendance Rust est
 [fontdue](https://crates.io/crates/fontdue), pour le texte, dessiné à partir des
 polices du système.
 

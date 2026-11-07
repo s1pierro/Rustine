@@ -219,6 +219,30 @@ pub unsafe fn demander(env: *mut c_void, activite: Obj, sdk: i32) -> bool {
 ///
 /// # Safety
 /// `vm` : le `JavaVM` de `ANativeActivity`.
+/// La machine virtuelle Java du processus, notée au lancement : un thread de travail
+/// s'y attache pour les API qui l'exigent (ouvrir un flux réseau par `libmediandk`).
+static VM: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+pub fn noter_vm(vm: *mut c_void) {
+    VM.store(vm as usize, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn vm() -> *mut c_void {
+    VM.load(std::sync::atomic::Ordering::Relaxed) as *mut c_void
+}
+
+/// Détache le thread courant de la machine virtuelle : obligatoire avant qu'un thread
+/// attaché ne se termine, sinon Android arrête l'application.
+pub unsafe fn detacher(vm: *mut c_void) {
+    if vm.is_null() {
+        return;
+    }
+    // JNIInvokeInterface : DetachCurrentThread est au rang 5
+    let table = *(vm as *const *const *const c_void);
+    let detach: unsafe extern "C" fn(*mut c_void) -> i32 = std::mem::transmute_copy(&*table.add(5));
+    detach(vm);
+}
+
 pub unsafe fn attacher(vm: *mut c_void) -> Option<*mut c_void> {
     if vm.is_null() {
         return None;
@@ -271,4 +295,81 @@ pub unsafe fn racine(env: *mut c_void) -> Option<String> {
     let kf = j.classe("java/io/File")?;
     let chemin = j.objet(f, j.methode(kf, "getAbsolutePath", "()Ljava/lang/String;", false)?, &[])?;
     j.lire_texte(chemin)
+}
+
+const NEW_GLOBAL_REF: usize = 21;
+
+/// Le contexte de l'application (référence globale), qui survit à l'activité : c'est
+/// lui qui pilote le service de lecture.
+static CONTEXTE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Note le contexte de l'application.
+///
+/// # Safety
+/// Sur le thread principal, avec le `JNIEnv` et l'activité de `ANativeActivity`.
+pub unsafe fn noter_contexte(env: *mut c_void, activite: Obj) {
+    let j = Jni { env };
+    let c = (|| j.objet(activite, j.methode(j.classe_de(activite), "getApplicationContext", "()Landroid/content/Context;", false)?, &[]))();
+    if let Some(c) = c {
+        let global: unsafe extern "C" fn(*mut c_void, Obj) -> Obj = j.f(NEW_GLOBAL_REF);
+        CONTEXTE.store(global(env, c) as usize, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// Envoie au service de lecture (`fr.s1pierro.rustine.Lecture`) son état, un titre et
+/// un texte : il se met au premier plan, montre la notification et ses commandes, ou
+/// s'arrête pour l'état 0. Depuis n'importe quel thread connu de Java.
+pub fn service(etat: i32, titre: &str, texte: &str) {
+    let contexte = CONTEXTE.load(std::sync::atomic::Ordering::Relaxed) as Obj;
+    if contexte.is_null() {
+        return;
+    }
+    unsafe {
+        // Un thread de passage (le gardien du mixeur) est attaché le temps de l'appel,
+        // puis détaché : un thread qui se termine attaché arrête l'application
+        let vm = vm();
+        let deja = deja_attache(vm);
+        let Some(env) = attacher(vm) else { return };
+        let j = Jni { env };
+        let push: unsafe extern "C" fn(*mut c_void, i32) -> i32 = j.f(PUSH_LOCAL_FRAME);
+        if push(env, 16) != 0 {
+            j.exception();
+            return;
+        }
+        let ok = (|| {
+            let kc = j.classe_de(contexte);
+            let paquet = j.objet(contexte, j.methode(kc, "getPackageName", "()Ljava/lang/String;", false)?, &[])?;
+            let ki = j.classe("android/content/Intent")?;
+            let intent = j.nouveau(ki, "()V", &[])?;
+            let classe = j.methode(ki, "setClassName", "(Ljava/lang/String;Ljava/lang/String;)Landroid/content/Intent;", false)?;
+            j.objet(intent, classe, &[paquet as Val, j.texte("fr.s1pierro.rustine.Lecture")? as Val])?;
+            let entier = j.methode(ki, "putExtra", "(Ljava/lang/String;I)Landroid/content/Intent;", false)?;
+            j.objet(intent, entier, &[j.texte("etat")? as Val, etat as u32 as Val])?;
+            let chaine = j.methode(ki, "putExtra", "(Ljava/lang/String;Ljava/lang/String;)Landroid/content/Intent;", false)?;
+            j.objet(intent, chaine, &[j.texte("titre")? as Val, j.texte(titre)? as Val])?;
+            j.objet(intent, chaine, &[j.texte("texte")? as Val, j.texte(texte)? as Val])?;
+            let lancer = j.methode(kc, "startForegroundService", "(Landroid/content/Intent;)Landroid/content/ComponentName;", false)?;
+            j.objet(contexte, lancer, &[intent as Val])
+        })();
+        if ok.is_none() {
+            crate::android::log("service de lecture injoignable");
+        }
+        let pop: unsafe extern "C" fn(*mut c_void, Obj) -> Obj = j.f(POP_LOCAL_FRAME);
+        pop(env, std::ptr::null_mut());
+        if !deja {
+            detacher(vm);
+        }
+    }
+}
+
+/// Vrai si le thread courant est déjà connu de la machine virtuelle.
+unsafe fn deja_attache(vm: *mut c_void) -> bool {
+    if vm.is_null() {
+        return false;
+    }
+    // JNIInvokeInterface : GetEnv est au rang 6 ; JNI_VERSION_1_6
+    let table = *(vm as *const *const *const c_void);
+    let get: unsafe extern "C" fn(*mut c_void, *mut *mut c_void, i32) -> i32 = std::mem::transmute_copy(&*table.add(6));
+    let mut env = std::ptr::null_mut();
+    get(vm, &mut env, 0x0001_0006) == 0 && !env.is_null()
 }

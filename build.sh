@@ -27,6 +27,8 @@ need zipalign  "zipalign ou aapt"
 need apksigner apksigner
 need keytool   openjdk-17
 need zip       zip
+need javac     openjdk-17
+need d8        d8
 
 # aapt2 de préférence ; sinon l'ancien aapt (fourni par le paquet aapt) fait le même travail ici.
 if command -v aapt2 >/dev/null 2>&1; then PACKER=aapt2
@@ -83,14 +85,22 @@ say "Empaquetage ($PACKER, $ANDROID_JAR)…"
 rm -rf "$OUT/tmp" && mkdir -p "$OUT/tmp/lib/$ABI"
 if [ "$PACKER" = aapt2 ]; then
   aapt2 compile --dir res -o "$OUT/tmp/res.zip"
-  aapt2 link -o "$OUT/tmp/base.apk" -I "$ANDROID_JAR" --manifest AndroidManifest.xml "$OUT/tmp/res.zip"
+  aapt2 link -o "$OUT/tmp/base.apk" -I "$ANDROID_JAR" --manifest AndroidManifest.xml --java "$OUT/tmp/gen" "$OUT/tmp/res.zip"
 else
-  aapt package -f -M AndroidManifest.xml -S res -I "$ANDROID_JAR" -F "$OUT/tmp/base.apk"
+  mkdir -p "$OUT/tmp/gen"
+  aapt package -f -M AndroidManifest.xml -S res -I "$ANDROID_JAR" -J "$OUT/tmp/gen" -F "$OUT/tmp/base.apk"
 fi
+
+# --- 2 bis. Code Java (le service de lecture), compilé en classes.dex -------
+say "Compilation Java…"
+mkdir -p "$OUT/tmp/classes"
+javac -source 8 -target 8 -Xlint:-options -bootclasspath "$ANDROID_JAR" -d "$OUT/tmp/classes" \
+  $(find java "$OUT/tmp/gen" -name '*.java')
+d8 --lib "$ANDROID_JAR" --min-api 26 --output "$OUT/tmp" $(find "$OUT/tmp/classes" -name '*.class')
 
 # --- 3. Ajout de la bibliothèque native -------------------------------------
 cp "$SO" "$OUT/tmp/lib/$ABI/"
-( cd "$OUT/tmp" && zip -q -r base.apk lib )
+( cd "$OUT/tmp" && zip -q -r base.apk lib classes.dex )
 
 # --- 4. Alignement ----------------------------------------------------------
 say "Alignement…"

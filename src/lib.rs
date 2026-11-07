@@ -7,11 +7,14 @@
 
 pub mod acces;
 pub mod android;
+pub mod audio;
 pub mod clavier;
 pub mod demo;
 pub mod draw;
 pub mod gles;
 pub mod math;
+pub mod mixage;
+pub mod radio;
 pub mod reglages;
 pub mod renderer;
 pub mod shell;

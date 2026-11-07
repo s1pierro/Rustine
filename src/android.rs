@@ -101,7 +101,7 @@ extern "C" {
     fn __android_log_write(prio: i32, tag: *const i8, text: *const i8) -> i32;
 }
 
-fn log(s: &str) {
+pub fn log(s: &str) {
     let text = CString::new(s).unwrap_or_default();
     unsafe {
         __android_log_write(6, c"Rustine".as_ptr() as *const _, text.as_ptr() as *const _);
@@ -142,6 +142,14 @@ static START: OnceLock<Instant> = OnceLock::new();
 
 fn now() -> f64 {
     START.get_or_init(Instant::now).elapsed().as_secs_f64()
+}
+
+/// Redessine dès que possible : appelé par les threads de travail (la radio).
+fn reveiller() {
+    if let Ok(mut s) = SHARED.lock() {
+        s.redraw = true;
+    }
+    WAKE.notify_all();
 }
 
 fn push(events: &[Event]) {
@@ -239,6 +247,10 @@ fn render_loop() -> Result<(), String> {
                 app.appliquer(r);
             }
             app.fichier_reglages = fichier.as_ref().map(|f| f.chemin.display().to_string());
+            // L'historique des radios vit à côté des réglages de l'interface
+            if let Some(d) = fichier.as_ref().and_then(|f| f.chemin.parent()) {
+                app.historique_en(d.join(crate::radio::HISTORIQUE));
+            }
         }
 
         for (e, t) in events {
@@ -421,12 +433,15 @@ pub unsafe extern "C" fn ANativeActivity_onCreate(activity: *mut ANativeActivity
     let mut s = SHARED.lock().unwrap();
     s.dp = density(activity);
     s.vm = (*activity).vm as usize;
+    crate::acces::noter_vm((*activity).vm as *mut c_void);
+    crate::radio::au_changement(reveiller);
     s.activite = (*activity).clazz as usize;
     // Le dossier externe de l'application, qu'on peut ouvrir depuis un gestionnaire de
     // fichiers ; à défaut, le dossier interne
     let dossier = |p: *const i8| (!p.is_null()).then(|| PathBuf::from(CStr::from_ptr(p as *const _).to_string_lossy().into_owned()));
     s.dossier = dossier((*activity).external_data_path).or_else(|| dossier((*activity).internal_data_path));
     drop(s);
+    crate::acces::noter_contexte((*activity).env, (*activity).clazz);
     let cb = &mut *(*activity).callbacks;
     cb.on_resume = Some(on_resume);
     cb.on_native_window_created = Some(on_window_created);

@@ -111,6 +111,11 @@ pub enum Icon {
     Rustine,
     /// Une batterie remplie à `niveau` (0 à 100) ; en charge, un éclair.
     Batterie { niveau: u8, charge: bool },
+    /// Un poste de radio, et les commandes de lecture.
+    Radio,
+    Lecture,
+    Pause,
+    Stop,
 }
 
 /// Les deux couleurs de la rustine, quel que soit le thème.
@@ -319,6 +324,32 @@ impl Cx<'_> {
                 self.dl.line(p(-8.0, 0.0), p(8.0, 0.0), t, color);
                 self.dl.line(p(0.0, -8.0), p(0.0, 8.0), t, color);
             }
+            Icon::Radio => {
+                // Le boîtier, l'anse, le haut-parleur et le cadran
+                let e = 1.9 * u;
+                for (a, b) in [((-9.5, -5.5), (9.5, -5.5)), ((9.5, -5.5), (9.5, 9.5)), ((9.5, 9.5), (-9.5, 9.5)), ((-9.5, 9.5), (-9.5, -5.5))] {
+                    self.dl.line(p(a.0, a.1), p(b.0, b.1), e, color);
+                }
+                self.dl.line(p(-4.0, -5.5), p(5.0, -10.0), e, color);
+                self.dl.rrect(Rect::new(cx - 8.0 * u, cy + 1.5 * u, 6.0 * u, 6.0 * u), 3.0 * u, color);
+                self.dl.line(p(-6.5, -1.5), p(6.5, -1.5), 2.6 * u, color);
+                self.dl.line(p(4.0, 2.5), p(4.0, 7.0), 2.2 * u, color);
+            }
+            Icon::Lecture => {
+                // Triangle plein, empilé en traits verticaux arrondis
+                let n = 10;
+                for i in 0..=n {
+                    let x = -5.0 + 12.0 * i as f32 / n as f32;
+                    let h = 7.5 * (1.0 - (x + 5.0) / 13.0);
+                    self.dl.line(p(x, -h), p(x, h), 1.8 * u, color);
+                }
+            }
+            Icon::Pause => {
+                for x in [-6.5, 2.5] {
+                    self.dl.rrect(Rect::new(cx + x * u, cy - 7.5 * u, 4.0 * u, 15.0 * u), 1.2 * u, color);
+                }
+            }
+            Icon::Stop => self.dl.rrect(Rect::new(cx - 7.0 * u, cy - 7.0 * u, 14.0 * u, 14.0 * u), 2.0 * u, color),
             Icon::Close => {
                 self.dl.line(p(-6.0, -6.0), p(6.0, 6.0), t, color);
                 self.dl.line(p(6.0, -6.0), p(-6.0, 6.0), t, color);
