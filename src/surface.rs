@@ -39,9 +39,6 @@ const BARRE: f32 = 0.75;
 const MENU_LIGNE: f32 = 0.875;
 const SEUIL: f32 = 64.0;
 const MENU_LARGE: f32 = 220.0;
-/// Marge des pastilles au coin de la fenêtre, et écart entre elles (dp).
-pub const MARGE: f32 = 14.0;
-pub const ECART: f32 = 10.0;
 /// Bornes d'une proportion.
 const MIN: f32 = 0.1;
 const MAX: f32 = 0.9;
@@ -406,7 +403,7 @@ impl Surface {
             let titre = Rect::new(b.x, b.y, (8.0 * d + ic + 6.0 * d + tw + 10.0 * d).min(poignee.x - b.x), bh);
             let etat = Rect::new(titre.right(), b.y, (poignee.x - titre.right()).max(0.0), bh);
             let h = cx.commande();
-            let suite = (c.x + MARGE * d + h + ECART * d, c.y + MARGE * d);
+            let suite = (c.x + cx.coin() + h + cx.ecart(), c.y + cx.coin());
             let p = Placee { id, vue, cadre: c, contenu: Rect::new(c.x, c.y, c.w, c.h - bh), barre: b, titre, etat, suite };
             self.placees.push(p);
 
@@ -478,7 +475,7 @@ impl Surface {
         let mut plus = Vec::new();
         for p in self.placees.clone() {
             let c = p.contenu;
-            let r = Rect::new(c.x + MARGE * d, c.y + MARGE * d, taille, taille);
+            let r = Rect::new(c.x + cx.coin(), c.y + cx.coin(), taille, taille);
             let pk = sub_id(PLUS_ID, p.id as usize);
             if let Some(g) = cx.ui.drag(pk, r) {
                 let geste = self.geste.get_or_insert(Geste { fenetre: p.id, depart: (g.x, g.y), doigt: (g.x, g.y), sens: None, vu: true });
@@ -524,9 +521,9 @@ impl Surface {
         }
         for (r, appui) in plus {
             let rayon = cx.theme.rayon(r.h);
-            cx.dl.shadow(Rect::new(r.x, r.y + 2.0 * d, r.w, r.h), rayon, 8.0 * d, col.ombre);
+            cx.ombre(r, rayon, 8.0);
             cx.dl.rrect(r, rayon, if appui { col.accent } else { col.surface });
-            cx.icon(r.inset(r.w * 0.2), Icon::Plus, if appui { col.sur_accent } else { col.accent });
+            cx.icon(r.inset((cx.pad() * 0.6).min(r.w * 0.35)), Icon::Plus, if appui { col.sur_accent } else { col.accent });
         }
         let Some(p) = self.menu.and_then(|f| self.placees.iter().find(|p| p.id == f).copied()) else {
             self.menu = None;

@@ -57,10 +57,9 @@ fn main() {
         let mut scene = None;
         for i in 0..60 {
             if i == 30 && s.help {
-                // Vraie séquence tactile : appui sur la pastille d'aide.
-                let at = (14.0 + 24.0) * s.dp;
-                let x = at + 3.0 * 58.0 * s.dp;
-                ui.event(Event::Down { id: 0, x, y: at + 320.0 * s.dp }, 0.0);
+                // Vraie séquence tactile : appui sur la pastille d'aide, dans la barre du bas.
+                let c = 48.0 * s.dp;
+                ui.event(Event::Down { id: 0, x: 3.5 * c, y: h - c / 2.0 }, 0.0);
                 ui.event(Event::Up { id: 0 }, 0.05);
             }
             dl.clear();

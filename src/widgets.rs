@@ -33,7 +33,10 @@ pub const ACCENTS: [(&str, Color, Color); 6] = [
 
 /// L'apparence, réglable : la taille des commandes (pastilles, pilules, boutons,
 /// onglets) et des lignes de liste en dp, l'échelle du texte, l'arrondi (0 : coins
-/// presque droits, 1 : bouts ronds), l'accent et le thème sombre.
+/// presque droits, 1 : bouts ronds), l'accent et le thème sombre. `marge` : l'écart
+/// autour des commandes, en dp ; à 0, l'affichage est aplati (commandes jointives,
+/// sans ombre). `padding` : l'espace entre le bord d'une commande et son contenu, en
+/// dp, jamais nul.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Theme {
     pub commande: f32,
@@ -42,11 +45,13 @@ pub struct Theme {
     pub arrondi: f32,
     pub accent: usize,
     pub sombre: bool,
+    pub marge: f32,
+    pub padding: f32,
 }
 
 impl Default for Theme {
     fn default() -> Theme {
-        Theme { commande: 48.0, ligne: 48.0, texte: 1.0, arrondi: 1.0, accent: 0, sombre: false }
+        Theme { commande: 48.0, ligne: 48.0, texte: 1.0, arrondi: 1.0, accent: 0, sombre: false, marge: 10.0, padding: 16.0 }
     }
 }
 
@@ -86,7 +91,7 @@ impl Theme {
     }
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Icon {
     List,
     Sliders,
@@ -97,7 +102,20 @@ pub enum Icon {
     /// Un cube en perspective : une vue 3D.
     Cube,
     Plus,
+    /// Les touches spéciales du clavier : majuscule, effacer, entrée, baisser le clavier.
+    Maj,
+    Effacer,
+    Entree,
+    Baisser,
+    /// La rustine de l'application : bord orange denté, centre noir.
+    Rustine,
+    /// Une batterie remplie à `niveau` (0 à 100) ; en charge, un éclair.
+    Batterie { niveau: u8, charge: bool },
 }
+
+/// Les deux couleurs de la rustine, quel que soit le thème.
+pub const RUSTINE_ORANGE: Color = [0xF5, 0x82, 0x20, 255];
+pub const RUSTINE_NOIR: Color = [0x1E, 0x1E, 0x25, 255];
 
 /// Défilement de chaque zone : position et hauteur du contenu.
 pub type Scrolls = HashMap<Id, (f32, f32)>;
@@ -120,6 +138,19 @@ pub struct Body {
     rect: Rect,
 }
 
+impl Body {
+    /// L'identifiant de la zone défilante, pour qu'un glissement parti d'un composant
+    /// la fasse défiler.
+    pub fn id(&self) -> Id {
+        self.id
+    }
+
+    /// Le rectangle visible de la zone.
+    pub fn rect(&self) -> Rect {
+        self.rect
+    }
+}
+
 impl Cx<'_> {
     pub fn couleurs(&self) -> Couleurs {
         self.theme.couleurs()
@@ -128,6 +159,29 @@ impl Cx<'_> {
     /// La hauteur des commandes, en pixels.
     pub fn commande(&self) -> f32 {
         (self.theme.commande * self.dp).round()
+    }
+
+    /// L'écart entre deux commandes voisines, en pixels.
+    pub fn ecart(&self) -> f32 {
+        (self.theme.marge * self.dp).round()
+    }
+
+    /// La marge entre le bord d'une zone et les commandes posées dans son coin.
+    pub fn coin(&self) -> f32 {
+        (self.theme.marge * 1.4 * self.dp).round()
+    }
+
+    /// L'espace entre le bord d'une commande et son contenu, en pixels.
+    pub fn pad(&self) -> f32 {
+        (self.theme.padding.max(1.0) * self.dp).round()
+    }
+
+    /// L'ombre d'une commande, sauf en affichage aplati (marge nulle).
+    pub fn ombre(&mut self, r: Rect, rayon: f32, flou: f32) {
+        if self.theme.marge >= 1.0 {
+            let c = self.couleurs().ombre;
+            self.dl.shadow(Rect::new(r.x, r.y + 2.0 * self.dp, r.w, r.h), rayon, flou * self.dp, c);
+        }
     }
 
     /// Une taille de texte (dp) en pixels, à l'échelle du thème.
@@ -208,6 +262,59 @@ impl Cx<'_> {
                     self.dl.line(o, v[k], 1.8 * u, color);
                 }
             }
+            Icon::Maj => {
+                let v = [p(0.0, -9.0), p(8.0, 0.0), p(4.0, 0.0), p(4.0, 8.0), p(-4.0, 8.0), p(-4.0, 0.0), p(-8.0, 0.0)];
+                for i in 0..v.len() {
+                    self.dl.line(v[i], v[(i + 1) % v.len()], 1.8 * u, color);
+                }
+            }
+            Icon::Effacer => {
+                let v = [p(-10.0, 0.0), p(-4.0, -7.0), p(9.0, -7.0), p(9.0, 7.0), p(-4.0, 7.0)];
+                for i in 0..v.len() {
+                    self.dl.line(v[i], v[(i + 1) % v.len()], 1.8 * u, color);
+                }
+                self.dl.line(p(-1.0, -3.0), p(5.0, 3.0), 1.8 * u, color);
+                self.dl.line(p(5.0, -3.0), p(-1.0, 3.0), 1.8 * u, color);
+            }
+            Icon::Entree => {
+                self.dl.line(p(8.0, -7.0), p(8.0, 2.0), t, color);
+                self.dl.line(p(8.0, 2.0), p(-8.0, 2.0), t, color);
+                self.dl.line(p(-8.0, 2.0), p(-3.5, -2.5), t, color);
+                self.dl.line(p(-8.0, 2.0), p(-3.5, 6.5), t, color);
+            }
+            Icon::Baisser => {
+                self.dl.line(p(-7.0, -3.0), p(0.0, 4.0), t, color);
+                self.dl.line(p(0.0, 4.0), p(7.0, -3.0), t, color);
+            }
+            Icon::Rustine => {
+                // Huit dents arrondies autour d'un disque orange, puis le centre noir
+                let r = r.w.min(r.h) / 2.0;
+                for k in 0..8 {
+                    let a = k as f32 * std::f32::consts::FRAC_PI_4 - std::f32::consts::FRAC_PI_2;
+                    let (x, y) = (cx + 0.8 * r * a.cos(), cy + 0.8 * r * a.sin());
+                    let t = 0.22 * r;
+                    self.dl.rrect(Rect::new(x - t, y - t, 2.0 * t, 2.0 * t), t, RUSTINE_ORANGE);
+                }
+                self.dl.rrect(Rect::new(cx - 0.86 * r, cy - 0.86 * r, 1.72 * r, 1.72 * r), 0.86 * r, RUSTINE_ORANGE);
+                self.dl.rrect(Rect::new(cx - 0.66 * r, cy - 0.66 * r, 1.32 * r, 1.32 * r), 0.66 * r, RUSTINE_NOIR);
+            }
+            Icon::Batterie { niveau, charge } => {
+                let (w, h, e) = (18.0 * u, 10.0 * u, 1.5 * u);
+                let b = Rect::new(cx - w / 2.0 - u, cy - h / 2.0, w, h);
+                self.dl.rrect(b, 2.0 * u, color);
+                self.dl.rrect(b.inset(e), 1.0 * u, self.theme.couleurs().surface);
+                let plein = b.inset(e + u);
+                let f = (niveau.min(100) as f32 / 100.0) * plein.w;
+                let teinte = if charge { self.theme.couleurs().accent } else if niveau <= 15 { [0xE0, 0x3A, 0x3A, 255] } else { color };
+                self.dl.rrect(Rect::new(plein.x, plein.y, f, plein.h), 0.6 * u, teinte);
+                self.dl.rrect(Rect::new(b.right(), cy - 2.5 * u, 2.0 * u, 5.0 * u), u, color);
+                if charge {
+                    let s = self.theme.couleurs().surface;
+                    self.dl.line(p(1.0, -5.5), p(-2.0, 0.5), 2.2 * u, s);
+                    self.dl.line(p(-2.0, 0.5), p(1.0, 0.5), 2.2 * u, s);
+                    self.dl.line(p(1.0, 0.5), p(-2.0, 5.5), 2.2 * u, s);
+                }
+            }
             Icon::Plus => {
                 self.dl.line(p(-8.0, 0.0), p(8.0, 0.0), t, color);
                 self.dl.line(p(0.0, -8.0), p(0.0, 8.0), t, color);
@@ -227,10 +334,25 @@ impl Cx<'_> {
         let clicked = self.ui.click(id, r, None);
         let pressed = self.ui.pressed(id);
         let rayon = self.theme.rayon(h);
-        self.dl.shadow(Rect::new(r.x, r.y + 2.0 * self.dp, r.w, r.h), rayon, 8.0 * self.dp, c.ombre);
+        self.ombre(r, rayon, 8.0);
         let bg = if active { c.accent } else if pressed { c.puce } else { c.surface };
         self.dl.rrect(r, rayon, bg);
-        self.icon(r.inset(r.w * 0.2), icon, if active { c.sur_accent } else { c.accent });
+        let inset = (self.pad() * 0.6).min(r.w * 0.35);
+        self.icon(r.inset(inset), icon, if active { c.sur_accent } else { c.accent });
+        clicked
+    }
+
+    /// Pastille aplatie, pour une barre : carrée, sans marge ni ombre.
+    pub fn pastille_plate(&mut self, id: Id, r: Rect, icon: Icon, active: bool) -> bool {
+        let c = self.couleurs();
+        let clicked = self.ui.click(id, r, None);
+        if active {
+            self.dl.rrect(r, 0.0, c.accent);
+        } else if self.ui.pressed(id) {
+            self.dl.rrect(r, 0.0, c.puce);
+        }
+        let inset = (self.pad() * 0.6).min(r.w * 0.35);
+        self.icon(r.inset(inset), icon, if active { c.sur_accent } else { c.accent });
         clicked
     }
 
@@ -241,14 +363,14 @@ impl Cx<'_> {
         let clicked = self.ui.click(id, r, None);
         let pressed = self.ui.pressed(id);
         let rayon = self.theme.rayon(r.h);
-        self.dl.shadow(Rect::new(r.x, r.y + 2.0 * self.dp, r.w, r.h), rayon, 6.0 * self.dp, c.ombre);
+        self.ombre(r, rayon, 6.0);
         self.dl.rrect(r, rayon, if active { c.accent } else if pressed { c.puce } else { c.surface });
         self.centered(r, label, 15.0, if active { c.sur_accent } else { c.texte });
         clicked
     }
 
     pub fn pill_width(&mut self, label: &str) -> f32 {
-        self.measure(label, 15.0) + 0.75 * self.commande()
+        self.measure(label, 15.0) + 2.0 * self.pad()
     }
 
     /// Rangée d'onglets, à la taille des commandes, à partir de (x, y). Renvoie
@@ -257,7 +379,7 @@ impl Cx<'_> {
         let (mut x, mut result) = (x, selected);
         let (h, c) = (self.commande(), self.couleurs());
         for (i, label) in labels.iter().enumerate() {
-            let w = self.measure(label, 15.0) + 0.66 * h;
+            let w = self.measure(label, 15.0) + 2.0 * self.pad();
             let t = Rect::new(x, y, w, h);
             if self.ui.click(sub_id(id, i), t, None) {
                 result = i;
@@ -265,7 +387,7 @@ impl Cx<'_> {
             let on = i == selected;
             self.dl.rrect(t, self.theme.rayon(h), if on { c.accent } else { c.puce });
             self.centered(t, label, 15.0, if on { c.sur_accent } else { c.texte });
-            x += w + 6.0 * self.dp;
+            x += w + (self.theme.marge * 0.6 * self.dp).round();
         }
         result
     }
@@ -344,11 +466,14 @@ impl Cx<'_> {
         b.y += r.h;
     }
 
+    /// Curseur. Il laisse à sa gauche une marge de la taille d'une pastille et de son
+    /// écart : le doigt y fait défiler la colonne, même quand les curseurs se suivent.
     pub fn slider(&mut self, b: &mut Body, id: Id, label: &str, shown: &str, value: &mut f32, lo: f32, hi: f32) {
-        let r = Rect::new(b.x, b.y, b.w, (64.0 * self.dp * self.theme.texte.max(1.0)).round());
+        let marge = (self.commande() + self.ecart()).min(b.w * 0.4);
+        let r = Rect::new(b.x + marge, b.y, b.w - marge, (64.0 * self.dp * self.theme.texte.max(1.0)).round());
         let c = self.couleurs();
         let ty = r.y + 16.0 * self.dp * self.theme.texte;
-        self.label(b.x, ty, label, 16.0, c.texte);
+        self.label(r.x, ty, label, 16.0, c.texte);
         self.text_right(r.right(), ty, shown, 14.0, c.pale);
         let track_y = r.bottom() - 20.0 * self.dp;
         let knob = 11.0 * self.dp;
@@ -366,12 +491,12 @@ impl Cx<'_> {
     }
 
     pub fn button(&mut self, b: &mut Body, id: Id, label: &str) -> bool {
-        let r = Rect::new(b.x, b.y + 4.0 * self.dp, b.w, self.commande());
+        let r = Rect::new(b.x, b.y + (self.theme.marge * 0.4 * self.dp).round(), b.w, self.commande());
         let c = self.couleurs();
         let clicked = self.ui.click(id, r, Some(b.id));
         self.dl.rrect(r, self.theme.rayon(r.h), if self.ui.pressed(id) { c.ligne } else { c.puce });
         self.centered(r, label, 15.0, c.accent);
-        b.y += r.h + 8.0 * self.dp;
+        b.y += r.h + (self.theme.marge * 1.2 * self.dp).round();
         clicked
     }
 }

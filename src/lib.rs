@@ -7,6 +7,7 @@
 
 pub mod acces;
 pub mod android;
+pub mod clavier;
 pub mod demo;
 pub mod draw;
 pub mod gles;

@@ -128,11 +128,15 @@ struct Shared {
     racine: Option<PathBuf>,
     /// Relire les réglages (retour dans l'application, accès changé).
     relire: bool,
+    /// La machine virtuelle et l'activité, pour interroger la batterie depuis le
+    /// thread de rendu.
+    vm: usize,
+    activite: usize,
 }
 unsafe impl Send for Shared {}
 
 static SHARED: Mutex<Shared> =
-    Mutex::new(Shared { window: null_mut(), window_changed: false, released: true, redraw: false, events: Vec::new(), dp: 1.0, dossier: None, acces: false, racine: None, relire: true });
+    Mutex::new(Shared { window: null_mut(), window_changed: false, released: true, redraw: false, events: Vec::new(), dp: 1.0, dossier: None, acces: false, racine: None, relire: true, vm: 0, activite: 0 });
 static WAKE: Condvar = Condvar::new();
 static START: OnceLock<Instant> = OnceLock::new();
 
@@ -161,6 +165,13 @@ fn render_loop() -> Result<(), String> {
     let mut last = Instant::now();
     let mut again = false; // la dernière image demande à être suivie d'une autre
     let mut fichier: Option<Fichier> = None;
+    // L'heure et la batterie de la barre : relues à chaque minute, et l'écran redessiné
+    let (vm, activite) = {
+        let s = SHARED.lock().unwrap();
+        (s.vm as *mut c_void, s.activite as *mut c_void)
+    };
+    let env = unsafe { crate::acces::attacher(vm) };
+    let mut minute = None;
     let mut relire = true;
 
     loop {
@@ -169,10 +180,12 @@ fn render_loop() -> Result<(), String> {
             loop {
                 let drawing = !egl.surface.is_null();
                 let busy = drawing && (again || app.as_ref().is_some_and(|(a, _)| a.animating()));
-                if s.window_changed || s.redraw || busy || (drawing && !s.events.is_empty()) {
+                if s.window_changed || s.redraw || busy || (drawing && !s.events.is_empty()) || (drawing && minute != Some(heure().1)) {
                     break;
                 }
-                s = WAKE.wait(s).unwrap();
+                // Réveil à la minute suivante, pour l'heure de la barre
+                let reste = 60 - heure().2 as u64;
+                s = WAKE.wait_timeout(s, Duration::from_secs(reste.max(1))).unwrap().0;
             }
             s.redraw = false;
             let changed = std::mem::take(&mut s.window_changed);
@@ -213,6 +226,14 @@ fn render_loop() -> Result<(), String> {
             continue;
         }
         let (Some(render), (app, ui)) = (renderer.as_ref(), app.get_or_insert_with(|| (App::new(dp), Ui::new(dp)))) else { continue };
+        let h = heure();
+        if minute != Some(h.1) {
+            minute = Some(h.1);
+            app.heure = Some((h.0, h.1));
+            if let Some(env) = env {
+                app.batterie = unsafe { crate::acces::batterie(env, activite) };
+            }
+        }
         if std::mem::take(&mut relire) {
             if let Some(r) = fichier.as_mut().and_then(|f| f.relire()) {
                 app.appliquer(r);
@@ -244,6 +265,38 @@ fn render_loop() -> Result<(), String> {
         // Après une rotation, la nouvelle taille n'est connue qu'ici ; et un appui change
         // l'état après le dessin du widget, qu'il faut redessiner à jour.
         again = egl.size() != (w, h) || ui.a_redessiner();
+    }
+}
+
+#[repr(C)]
+struct Tm {
+    sec: i32,
+    min: i32,
+    hour: i32,
+    mday: i32,
+    mon: i32,
+    year: i32,
+    wday: i32,
+    yday: i32,
+    isdst: i32,
+    gmtoff: i64,
+    zone: *const i8,
+}
+
+extern "C" {
+    fn time(t: *mut i64) -> i64;
+    fn localtime_r(t: *const i64, tm: *mut Tm) -> *mut Tm;
+}
+
+/// L'heure locale : heures, minutes, secondes.
+fn heure() -> (u8, u8, u8) {
+    unsafe {
+        let t = time(null_mut());
+        let mut tm: Tm = std::mem::zeroed();
+        if localtime_r(&t, &mut tm).is_null() {
+            return (0, 0, 0);
+        }
+        (tm.hour as u8, tm.min as u8, tm.sec.clamp(0, 59) as u8)
     }
 }
 
@@ -367,6 +420,8 @@ unsafe fn density(activity: *mut ANativeActivity) -> f32 {
 pub unsafe extern "C" fn ANativeActivity_onCreate(activity: *mut ANativeActivity, _: *mut c_void, _: usize) {
     let mut s = SHARED.lock().unwrap();
     s.dp = density(activity);
+    s.vm = (*activity).vm as usize;
+    s.activite = (*activity).clazz as usize;
     // Le dossier externe de l'application, qu'on peut ouvrir depuis un gestionnaire de
     // fichiers ; à défaut, le dossier interne
     let dossier = |p: *const i8| (!p.is_null()).then(|| PathBuf::from(CStr::from_ptr(p as *const _).to_string_lossy().into_owned()));

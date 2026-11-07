@@ -20,6 +20,8 @@ type Val = u64;
 
 // Rangs dans la table de JNINativeInterface (jni.h)
 const FIND_CLASS: usize = 6;
+const PUSH_LOCAL_FRAME: usize = 19;
+const POP_LOCAL_FRAME: usize = 20;
 const EXCEPTION_CLEAR: usize = 17;
 const NEW_OBJECT_A: usize = 30;
 const GET_OBJECT_CLASS: usize = 31;
@@ -210,6 +212,51 @@ pub unsafe fn demander(env: *mut c_void, activite: Obj, sdk: i32) -> bool {
         })()
         .is_some()
     }
+}
+
+/// Le `JNIEnv` du thread courant, qu'on attache à la machine virtuelle s'il ne l'est
+/// pas encore (le thread de rendu, par exemple).
+///
+/// # Safety
+/// `vm` : le `JavaVM` de `ANativeActivity`.
+pub unsafe fn attacher(vm: *mut c_void) -> Option<*mut c_void> {
+    if vm.is_null() {
+        return None;
+    }
+    // JNIInvokeInterface : AttachCurrentThread est au rang 4
+    let table = *(vm as *const *const *const c_void);
+    let attach: unsafe extern "C" fn(*mut c_void, *mut *mut c_void, *mut c_void) -> i32 = std::mem::transmute_copy(&*table.add(4));
+    let mut env = std::ptr::null_mut();
+    (attach(vm, &mut env, std::ptr::null_mut()) == 0 && !env.is_null()).then_some(env)
+}
+
+/// La batterie : son niveau en % et si elle charge, lus dans l'annonce collante
+/// `ACTION_BATTERY_CHANGED` (sans s'y abonner).
+///
+/// # Safety
+/// `env` attaché au thread courant ; `activite` : une référence globale (celle de
+/// `ANativeActivity` l'est).
+pub unsafe fn batterie(env: *mut c_void, activite: Obj) -> Option<(u8, bool)> {
+    let j = Jni { env };
+    // Les références locales sont libérées d'un coup : ce thread ne revient jamais à Java
+    let push: unsafe extern "C" fn(*mut c_void, i32) -> i32 = j.f(PUSH_LOCAL_FRAME);
+    if push(env, 16) != 0 {
+        j.exception();
+        return None;
+    }
+    let r = (|| {
+        let kf = j.classe("android/content/IntentFilter")?;
+        let filtre = j.nouveau(kf, "(Ljava/lang/String;)V", &[j.texte("android.intent.action.BATTERY_CHANGED")? as Val])?;
+        let m = j.methode(j.classe_de(activite), "registerReceiver", "(Landroid/content/BroadcastReceiver;Landroid/content/IntentFilter;)Landroid/content/Intent;", false)?;
+        let intent = j.objet(activite, m, &[0, filtre as Val])?;
+        let get = j.methode(j.classe_de(intent), "getIntExtra", "(Ljava/lang/String;I)I", false)?;
+        let lire = |cle: &str| -> Option<i32> { j.entier(intent, get, &[j.texte(cle)? as Val, (-1i32) as u32 as Val]) };
+        let (niveau, echelle, etat) = (lire("level")?, lire("scale")?, lire("status")?);
+        (niveau >= 0 && echelle > 0).then(|| (((niveau * 100) / echelle).clamp(0, 100) as u8, etat == 2 || etat == 5))
+    })();
+    let pop: unsafe extern "C" fn(*mut c_void, Obj) -> Obj = j.f(POP_LOCAL_FRAME);
+    pop(env, std::ptr::null_mut());
+    r
 }
 
 /// La racine du stockage partagé, par exemple `/storage/emulated/0`.

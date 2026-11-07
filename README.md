@@ -22,7 +22,13 @@ l'installation depuis une source inconnue.
   change sa vue ou la ferme, la poignée la redimensionne et montre par un tiret
   chaque bord qu'elle peut déplacer
 - Vue Paramètres : taille commune des pastilles, pilules, boutons et onglets,
-  arrondi, taille du texte, hauteur des lignes, thème sombre et couleur d'accent
+  arrondi, marges (jusqu'à 0, affichage aplati), padding, taille du texte,
+  hauteur des lignes, thème sombre et couleur d'accent
+- Clavier virtuel dessiné par Rustine : AZERTY ou QWERTY, chiffres et symboles,
+  majuscule (deux appuis pour la verrouiller), variantes à l'appui long (é, è,
+  ç…), effacement répété, curseur déplacé en glissant sur l'espace, bulle
+  d'aperçu, en bas de l'écran ou flottant (on le déplace en tirant son bandeau) ;
+  champs de texte d'une ligne
 - Réglages de l'interface et disposition des fenêtres conservés dans un fichier
   texte modifiable à la main, `Rustine/interface.txt` à la racine du stockage
   partagé, relu au retour dans l'application
@@ -30,7 +36,9 @@ l'installation depuis une source inconnue.
   les réglages restent dans le dossier privé de l'application
 - Panneaux latéraux à onglets : gauche et droite en paysage, haut et bas en
   portrait, redimensionnables au doigt
-- Pastilles flottantes qui déploient les panneaux
+- Barre de l'application en bas de l'écran, là où le système réserve les gestes
+  mais laisse les appuis : pastilles aplaties (la rustine, les panneaux), heure et
+  batterie
 - Bibliothèque tactile : pilules, onglets, listes défilantes, interrupteurs,
   curseurs et boutons
 - Chaque doigt reste à ce qu'il a touché en premier ; hors des boutons, un doigt
@@ -39,7 +47,7 @@ l'installation depuis une source inconnue.
 
 ## Organisation
 
-- `src/ui.rs`, `shell.rs`, `surface.rs`, `widgets.rs`, `reglages.rs`, `draw.rs`, `text.rs` : l'interface, sans
+- `src/ui.rs`, `shell.rs`, `surface.rs`, `widgets.rs`, `clavier.rs`, `reglages.rs`, `draw.rs`, `text.rs` : l'interface, sans
   aucun appel OpenGL, donc testable partout
 - `src/gles.rs`, `renderer.rs`, `android.rs`, `acces.rs` : OpenGL ES et Android
 - `src/demo.rs` : l'application de démonstration

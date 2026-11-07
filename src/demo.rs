@@ -1,8 +1,11 @@
 //! Démonstration : l'espace de travail partagé en fenêtres (un cube, une liste, une
-//! aide), un panneau de chaque côté, des pastilles pour les déployer.
+//! aide), un panneau de chaque côté, et en bas de l'écran la barre de l'application :
+//! ses pastilles aplaties (la rustine, les panneaux), l'heure et la batterie. Le bas de
+//! l'écran est réservé aux gestes du système, mais les appuis y restent disponibles.
 
 use crate::draw::{Color, Rect};
 use crate::math::{self, Mat4};
+use crate::clavier::{self, Clavier, Disposition, Edition};
 use crate::reglages::Reglages;
 use crate::shell::{Layout, Shell, Side};
 use crate::surface::{Changement, FenetreId, Placee, Surface};
@@ -36,6 +39,9 @@ const LISTE: Id = id("liste-fenetre");
 const AIDE: Id = id("aide-fenetre");
 
 const PARAMS: Id = id("parametres");
+const BARRE: Id = id("barre-application");
+const RUSTINE: Id = id("rustine");
+const ESSAI: Id = id("essai-clavier");
 
 /// Les vues qu'une fenêtre de la surface peut montrer.
 pub const VUES: [(&str, Icon); 4] = [("Cube", Icon::Cube), ("Couleurs", Icon::List), ("Aide", Icon::Help), ("Paramètres", Icon::Sliders)];
@@ -76,12 +82,20 @@ const HOME: Camera = Camera { yaw: 0.65, pitch: 0.45, dist: 6.0, target: [0.0, 0
 enum EndContent {
     Display,
     Help,
+    APropos,
 }
 
 pub struct App {
     pub shell: Shell,
     /// L'apparence de l'interface, réglée dans la vue Paramètres.
     pub theme: Theme,
+    /// Le clavier virtuel, et le champ d'essai de la vue Paramètres.
+    pub clavier: Clavier,
+    essai: Edition,
+    /// L'heure (heures, minutes) et la batterie (niveau, en charge), données par le
+    /// système ; rien hors d'Android.
+    pub heure: Option<(u8, u8)>,
+    pub batterie: Option<(u8, bool)>,
     /// Où les réglages sont enregistrés, pour l'indiquer dans la vue Paramètres.
     pub fichier_reglages: Option<String>,
     /// L'espace de travail, partagé en fenêtres.
@@ -105,6 +119,10 @@ impl App {
             shell: Shell::new(dp),
             theme: Theme::default(),
             fichier_reglages: None,
+            heure: None,
+            batterie: None,
+            clavier: Clavier::default(),
+            essai: Edition::default(),
             surface: Surface::new(VUE_CUBE),
             cams: HashMap::new(),
             end_content: EndContent::Display,
@@ -121,7 +139,7 @@ impl App {
 
     /// Vrai s'il faut redessiner sans attendre un événement.
     pub fn animating(&self) -> bool {
-        self.spin || self.shell.animating()
+        self.spin || self.shell.animating() || self.clavier.anime()
     }
 
     /// Une pastille ouvre son contenu, ou referme le panneau s'il l'affiche déjà.
@@ -136,16 +154,25 @@ impl App {
 
     /// Les réglages de l'interface à enregistrer : l'apparence et les fenêtres.
     pub fn reglages(&self) -> Reglages {
-        Reglages { theme: self.theme, fenetres: Some(self.surface.ecrire()) }
+        Reglages { theme: self.theme, clavier: self.clavier.reglages, fenetres: Some(self.surface.ecrire()) }
     }
 
     /// Applique des réglages relus. Une disposition illisible garde les fenêtres.
     pub fn appliquer(&mut self, r: Reglages) {
         self.theme = r.theme;
+        self.clavier.reglages = r.clavier;
         if let Some(s) = r.fenetres.as_deref().and_then(Surface::lire) {
             if s.racine != self.surface.racine {
                 self.surface = s;
                 self.cams.clear();
+            }
+        }
+    }
+
+    fn frappes(&mut self, cx: &mut Cx, zone: Rect, dt: f32) {
+        for f in self.clavier.saisir(cx, zone, dt) {
+            if self.clavier.cible == Some(ESSAI) && self.essai.appliquer(f) {
+                self.clavier.fermer();
             }
         }
     }
@@ -156,6 +183,17 @@ impl App {
 
     pub fn frame(&mut self, cx: &mut Cx, screen: Rect, dt: f32) -> Scene {
         cx.theme = self.theme;
+        // La barre de l'application, tout en bas
+        let hb = cx.commande().min(screen.h / 4.0);
+        let barre = Rect::new(screen.x, screen.bottom() - hb, screen.w, hb);
+        let screen = Rect::new(screen.x, screen.y, screen.w, screen.h - hb);
+        // Le clavier ouvert prend le bas de l'écran, ou flotte par-dessus ; ses frappes
+        // vont au champ qui a le focus
+        let (screen, zone_clavier) = self.clavier.reserver(cx, screen);
+        let flottant = self.clavier.reglages.flottant;
+        if !flottant {
+            self.frappes(cx, zone_clavier, dt);
+        }
         let l = self.shell.layout(screen, dt);
         let placees = self.surface.frame(cx, l.workspace, &VUES);
         for c in self.surface.changements() {
@@ -181,15 +219,17 @@ impl App {
         for p in &placees {
             self.fenetre(cx, p);
         }
-        // Les pastilles flottent dans la première fenêtre 3D, sinon dans la première
-        if let Some(p) = placees.iter().find(|p| p.vue == VUE_CUBE).or(placees.first()) {
-            self.floating(cx, p.suite);
-        }
         self.surface.dessus(cx, &VUES);
+        self.barre(cx, barre);
 
         self.start_panel(cx, &l);
         self.end_panel(cx, &l);
         self.handles(cx, &l, screen);
+        // Flottant, le clavier déclare ses touches en dernier : elles passent devant tout
+        if flottant {
+            self.frappes(cx, zone_clavier, dt);
+        }
+        self.clavier.dessiner(cx);
         let mut scene = self.scene(l.workspace, &placees);
         scene.fond = cx.couleurs().fond;
         scene
@@ -220,7 +260,7 @@ impl App {
         let r = p.contenu;
         let etat = match p.vue {
             VUE_CUBE => {
-                let (gap, m, h) = (10.0 * d, 14.0 * d, cx.commande());
+                let (gap, m, h) = (cx.ecart(), cx.coin(), cx.commande());
                 let (w1, w2) = (cx.pill_width("Recadrer"), cx.pill_width("Rotation"));
                 if r.h > 3.0 * h && r.w > w1 + w2 + gap + 2.0 * m {
                     let x = r.cx() - (w1 + w2 + gap) / 2.0;
@@ -281,6 +321,12 @@ impl App {
         t.commande = t.commande.round();
         let shown = format!("{:.0} %", t.arrondi * 100.0);
         cx.slider(&mut b, sub_id(scroll, 1), "Arrondi", &shown, &mut t.arrondi, 0.0, 1.0);
+        let shown = if t.marge < 0.5 { "aplati".to_string() } else { format!("{:.0} dp", t.marge) };
+        cx.slider(&mut b, sub_id(scroll, 30), "Marges", &shown, &mut t.marge, 0.0, 20.0);
+        t.marge = t.marge.round();
+        let shown = format!("{:.0} dp", t.padding);
+        cx.slider(&mut b, sub_id(scroll, 31), "Padding", &shown, &mut t.padding, 4.0, 24.0);
+        t.padding = t.padding.round();
         cx.section(&mut b, "LECTURE");
         let shown = format!("{:.0} %", t.texte * 100.0);
         cx.slider(&mut b, sub_id(scroll, 2), "Taille du texte", &shown, &mut t.texte, 0.85, 1.3);
@@ -299,6 +345,22 @@ impl App {
         if cx.button(&mut b, sub_id(scroll, 5), "Rétablir l'apparence") {
             *t = Theme::default();
         }
+        cx.section(&mut b, "CLAVIER");
+        let c = &mut self.clavier.reglages;
+        for (i, disp) in Disposition::TOUTES.iter().enumerate() {
+            if cx.row(&mut b, sub_id(scroll, 20 + i), disp.nom(), None, *disp == c.disposition) {
+                c.disposition = *disp;
+            }
+        }
+        let shown = format!("{:.0} dp", c.touche);
+        cx.slider(&mut b, sub_id(scroll, 6), "Hauteur des touches", &shown, &mut c.touche, 40.0, 64.0);
+        c.touche = c.touche.round();
+        let shown = format!("{:.0} ms", c.appui_long * 1000.0);
+        cx.slider(&mut b, sub_id(scroll, 7), "Appui long (variantes)", &shown, &mut c.appui_long, 0.2, 0.8);
+        c.appui_long = (c.appui_long * 100.0).round() / 100.0;
+        cx.toggle(&mut b, sub_id(scroll, 8), "Aperçu des touches", &mut c.apercu);
+        cx.toggle(&mut b, sub_id(scroll, 9), "Clavier flottant", &mut c.flottant);
+        clavier::champ(cx, &mut b, ESSAI, "Essayer le clavier…", &mut self.essai, &mut self.clavier);
         cx.section(&mut b, "FICHIER");
         let ou = match &self.fichier_reglages {
             Some(f) => format!("Ces réglages sont enregistrés dans {f}, un fichier texte qu'on peut modifier à la main."),
@@ -308,19 +370,47 @@ impl App {
         cx.body_end(b, &mut self.scrolls);
     }
 
-    /// Les pastilles, à la suite de la pastille + de la fenêtre.
-    fn floating(&mut self, cx: &mut Cx, (x, y): (f32, f32)) {
-        let (size, gap) = (cx.commande(), crate::surface::ECART * cx.dp);
-        let at = |i: f32| (x + i * (size + gap), y);
+    /// La barre de l'application : pastilles aplaties à gauche (la rustine, puis les
+    /// panneaux), l'heure et la batterie à droite.
+    fn barre(&mut self, cx: &mut Cx, r: Rect) {
+        if r.h < 1.0 {
+            return;
+        }
+        let (d, col) = (cx.dp, cx.couleurs());
+        cx.ui.region_add(BARRE, r, crate::ui::Sense::Sink);
+        cx.dl.rrect(r, 0.0, col.surface);
+        cx.dl.rrect(Rect::new(r.x, r.y, r.w, d.max(1.0)), 0.0, col.ligne);
+        let case = |i: f32| Rect::new(r.x + i * r.h, r.y, r.h, r.h);
         let (end, content) = (self.shell.end.open, self.end_content);
-        if cx.pastille(OBJECTS, at(0.0).0, at(0.0).1, Icon::List, self.shell.start.open) {
+        if cx.pastille_plate(RUSTINE, case(0.0), Icon::Rustine, end && content == EndContent::APropos) {
+            self.toggle_end(EndContent::APropos);
+        }
+        if cx.pastille_plate(OBJECTS, case(1.0), Icon::List, self.shell.start.open) {
             self.shell.start.toggle();
         }
-        if cx.pastille(DISPLAY, at(1.0).0, at(1.0).1, Icon::Sliders, end && content == EndContent::Display) {
+        if cx.pastille_plate(DISPLAY, case(2.0), Icon::Sliders, end && content == EndContent::Display) {
             self.toggle_end(EndContent::Display);
         }
-        if cx.pastille(HELP, at(2.0).0, at(2.0).1, Icon::Help, end && content == EndContent::Help) {
+        if cx.pastille_plate(HELP, case(3.0), Icon::Help, end && content == EndContent::Help) {
             self.toggle_end(EndContent::Help);
+        }
+        // À droite : la batterie, puis l'heure tout au bord
+        let mut x = r.right() - cx.pad();
+        if let Some((h, m)) = self.heure {
+            let s = format!("{h:02}:{m:02}");
+            let w = cx.measure(&s, 15.0);
+            x -= w;
+            cx.text_at(x, r.cy(), &s, 15.0, col.texte);
+            x -= cx.pad();
+        }
+        if let Some((niveau, charge)) = self.batterie {
+            let s = format!("{niveau} %");
+            let w = cx.measure(&s, 13.0);
+            x -= w;
+            cx.text_at(x, r.cy(), &s, 13.0, col.pale);
+            let ic = (r.h * 0.5).round();
+            x -= ic + 4.0 * d;
+            cx.icon(Rect::new(x, r.cy() - ic / 2.0, ic, ic), Icon::Batterie { niveau, charge }, col.texte);
         }
     }
 
@@ -407,6 +497,20 @@ impl App {
                 }
                 cx.body_end(b, &mut self.scrolls);
             }
+            EndContent::APropos => {
+                cx.tabs(id("onglets-a-propos"), tabs.x, tabs.y, &["Rustine"], 0);
+                let mut b = cx.body(id("corps-a-propos"), body, &self.scrolls);
+                cx.section(&mut b, &format!("RUSTINE {}", env!("CARGO_PKG_VERSION")));
+                cx.paragraph(&mut b, "Socle d'applications Android en Rust : interface tactile et 3D en OpenGL ES 3, sans code Java.");
+                cx.paragraph(&mut b, "Réutilisable à des fins non commerciales, selon la licence PolyForm Noncommercial 1.0.0.");
+                cx.section(&mut b, "BARRE");
+                cx.paragraph(&mut b, "Le centre du bas de l'écran est réservé aux gestes du système, mais les appuis y restent libres : la barre de l'application y range ses pastilles.");
+                if let Some(f) = &self.fichier_reglages {
+                    cx.section(&mut b, "RÉGLAGES");
+                    cx.paragraph(&mut b, f);
+                }
+                cx.body_end(b, &mut self.scrolls);
+            }
             EndContent::Help => {
                 cx.tabs(id("onglets-aide"), tabs.x, tabs.y, &["Aide"], 0);
                 let mut b = cx.body(id("corps-aide"), body, &self.scrolls);
@@ -414,7 +518,7 @@ impl App {
                 cx.paragraph(&mut b, "Un doigt sur l'espace de travail fait tourner la vue.");
                 cx.paragraph(&mut b, "Deux doigts zooment et déplacent la vue.");
                 cx.section(&mut b, "PANNEAUX");
-                cx.paragraph(&mut b, "Les pastilles déploient les panneaux. L'espace de travail s'adapte à la place restante.");
+                cx.paragraph(&mut b, "Les pastilles de la barre du bas déploient les panneaux. L'espace de travail s'adapte à la place restante.");
                 cx.paragraph(&mut b, "Glissez la frontière d'un panneau pour le redimensionner ; un double appui rétablit sa taille.");
                 cx.body_end(b, &mut self.scrolls);
             }
@@ -510,9 +614,9 @@ mod tests {
         }
     }
 
-    // Centre de la n-ième pastille quand aucun panneau n'est ouvert (sous la barre de la fenêtre).
+    // Centre de la n-ième pastille des panneaux, dans la barre du bas (après la rustine).
     fn pastille(n: f32) -> (f32, f32) {
-        (1.5 * (14.0 + 24.0 + (n + 1.0) * 58.0), 1.5 * (14.0 + 24.0))
+        (72.0 * (n + 1.5), 1200.0 - 36.0)
     }
 
     #[test]
@@ -520,8 +624,9 @@ mod tests {
         let mut r = Rig::new();
         r.app.theme.commande = 60.0;
         r.frames(1);
-        // Les pastilles font 60 dp : la première, après le +, est plus loin du coin
-        let (x, y) = (1.5 * (14.0 + 60.0 + 10.0 + 30.0), 1.5 * (14.0 + 30.0));
+        // Les pastilles font 60 dp : la barre est plus haute, la première pastille des
+        // panneaux plus loin
+        let (x, y) = (90.0 * 1.5, 1200.0 - 45.0);
         r.tap(x, y);
         assert!(r.app.shell.start.open);
     }
@@ -538,7 +643,7 @@ mod tests {
         let (x, y) = pastille(1.0);
         r.tap(x, y); // nouvel appui : referme
         assert!(!r.app.shell.end.open);
-        assert_eq!(r.frames(60).workspace, SCREEN);
+        assert_eq!(r.frames(60).workspace, Rect::new(0., 0., 1920., 1200. - 72.));
     }
 
     #[test]
@@ -580,11 +685,11 @@ mod tests {
         let mut r = Rig::new();
         r.app.surface.partager(1, crate::surface::Sens::Colonnes, 0.5);
         r.frames(1);
-        // La poignée de la fenêtre de gauche : 54 px de côté, dans son coin bas droit
-        r.ui.event(Event::Down { id: 0, x: 933., y: 1173. }, 0.0);
+        // La poignée de la fenêtre de gauche : 54 px de côté, dans son coin bas droit, au-dessus de la barre de l'application
+        r.ui.event(Event::Down { id: 0, x: 933., y: 1101. }, 0.0);
         r.frames(1);
         for k in 1..=10 {
-            r.ui.event(Event::Move { id: 0, x: 933. + 30. * k as f32, y: 1173. }, 0.1);
+            r.ui.event(Event::Move { id: 0, x: 933. + 30. * k as f32, y: 1101. }, 0.1);
             r.frames(1);
         }
         r.ui.event(Event::Up { id: 0 }, 0.2);

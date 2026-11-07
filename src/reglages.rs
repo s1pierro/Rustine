@@ -1,11 +1,13 @@
 //! Réglages de l'interface, dans un fichier texte qu'on peut ouvrir et modifier à la
 //! main : une valeur par ligne, `clé = valeur`, des commentaires après `#`.
 //!
-//! Seule l'interface y figure : l'apparence (`Theme`) et la disposition des fenêtres.
+//! Seule l'interface y figure : l'apparence (`Theme`), le clavier virtuel et la
+//! disposition des fenêtres.
 //! Une clé inconnue, absente ou mal écrite garde sa valeur par défaut, et les nombres
 //! sont ramenés dans leurs bornes : un fichier abîmé ne casse rien. Le fichier est
 //! réécrit en entier, avec ses commentaires, quand un réglage change dans l'application.
 
+use crate::clavier::{Disposition, ReglagesClavier};
 use crate::widgets::{Theme, ACCENTS};
 use std::path::PathBuf;
 
@@ -15,6 +17,7 @@ pub const NOM: &str = "interface.txt";
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct Reglages {
     pub theme: Theme,
+    pub clavier: ReglagesClavier,
     /// La disposition des fenêtres, telle que `Surface::ecrire` l'écrit.
     pub fenetres: Option<String>,
 }
@@ -47,6 +50,7 @@ impl Reglages {
     pub fn lire(texte: &str) -> Reglages {
         let mut r = Reglages::default();
         let t = &mut r.theme;
+        let c = &mut r.clavier;
         for (k, v) in cles(texte) {
             match k.as_str() {
                 "commandes" => t.commande = nombre(&v).map_or(t.commande, |x| x.round().clamp(36.0, 64.0)),
@@ -54,7 +58,20 @@ impl Reglages {
                 "texte" => t.texte = nombre(&v).map_or(t.texte, |x| (x / 100.0).clamp(0.85, 1.3)),
                 "arrondi" => t.arrondi = nombre(&v).map_or(t.arrondi, |x| (x / 100.0).clamp(0.0, 1.0)),
                 "sombre" => t.sombre = oui(&v).unwrap_or(t.sombre),
+                "marges" => t.marge = nombre(&v).map_or(t.marge, |x| x.round().clamp(0.0, 20.0)),
+                "padding" => t.padding = nombre(&v).map_or(t.padding, |x| x.round().clamp(4.0, 24.0)),
                 "accent" => t.accent = ACCENTS.iter().position(|a| a.0.eq_ignore_ascii_case(&v)).unwrap_or(t.accent),
+                "clavier" => c.disposition = Disposition::TOUTES.into_iter().find(|d| d.nom().eq_ignore_ascii_case(&v)).unwrap_or(c.disposition),
+                "clavier_touches" => c.touche = nombre(&v).map_or(c.touche, |x| x.round().clamp(40.0, 64.0)),
+                "clavier_appui_long" => c.appui_long = nombre(&v).map_or(c.appui_long, |x| (x / 1000.0).clamp(0.2, 0.8)),
+                "clavier_apercu" => c.apercu = oui(&v).unwrap_or(c.apercu),
+                "clavier_flottant" => c.flottant = oui(&v).unwrap_or(c.flottant),
+                "clavier_position" => {
+                    let n: Vec<f32> = v.split_whitespace().filter_map(nombre).collect();
+                    if let [x, y] = n[..] {
+                        c.position = (x.clamp(0.0, 1.0), y.clamp(0.0, 1.0));
+                    }
+                }
                 "fenetres" if !v.is_empty() => r.fenetres = Some(v),
                 _ => {}
             }
@@ -79,10 +96,29 @@ impl Reglages {
         s += &format!("texte = {:.0}\n\n", t.texte * 100.0);
         s += "# Arrondi des commandes, en % (0 : coins presque droits ; 100 : bouts ronds)\n";
         s += &format!("arrondi = {:.0}\n\n", t.arrondi * 100.0);
+        s += "# Marges autour des boutons et pastilles, en dp (0 à 20 ; 10). À 0, l'affichage\n";
+        s += "# est aplati : commandes jointives, sans ombre\n";
+        s += &format!("marges = {:.0}\n\n", t.marge);
+        s += "# Padding, l'espace entre le bord d'un bouton et son contenu, en dp (4 à 24 ; 16)\n";
+        s += &format!("padding = {:.0}\n\n", t.padding);
         s += "# Thème sombre : oui ou non\n";
         s += &format!("sombre = {}\n\n", if t.sombre { "oui" } else { "non" });
         s += &format!("# Couleur d'accent : {}\n", accents.join(", "));
         s += &format!("accent = {}\n\n", accents[t.accent.min(accents.len() - 1)]);
+        let c = &self.clavier;
+        let dispositions: Vec<String> = Disposition::TOUTES.iter().map(|d| d.nom().to_lowercase()).collect();
+        s += &format!("# Clavier virtuel : {}\n", dispositions.join(" ou "));
+        s += &format!("clavier = {}\n\n", c.disposition.nom().to_lowercase());
+        s += "# Hauteur des touches du clavier, en dp (40 à 64 ; 50)\n";
+        s += &format!("clavier_touches = {:.0}\n\n", c.touche);
+        s += "# Durée de l'appui long qui propose les variantes (é, è…), en ms (200 à 800 ; 350)\n";
+        s += &format!("clavier_appui_long = {:.0}\n\n", c.appui_long * 1000.0);
+        s += "# Bulle qui montre la touche sous le doigt : oui ou non\n";
+        s += &format!("clavier_apercu = {}\n\n", if c.apercu { "oui" } else { "non" });
+        s += "# Clavier flottant, par-dessus l'interface, qu'on déplace en tirant son bandeau : oui ou non\n";
+        s += &format!("clavier_flottant = {}\n\n", if c.flottant { "oui" } else { "non" });
+        s += "# Place du clavier flottant : horizontale puis verticale, de 0 (gauche, haut) à 1 (droite, bas)\n";
+        s += &format!("clavier_position = {:.3} {:.3}\n\n", c.position.0, c.position.1);
         s += "# Disposition des fenêtres : F<numéro>:<vue> pour une fenêtre ; C<part>(…,…)\n";
         s += "# pour deux fenêtres côte à côte, L<part>(…,…) pour l'une sur l'autre. La part\n";
         s += "# est celle de la première, de 0.1 à 0.9.\n";
@@ -144,13 +180,15 @@ mod tests {
     #[test]
     fn les_reglages_se_relisent() {
         let r = Reglages {
-            theme: Theme { commande: 56.0, ligne: 44.0, texte: 1.15, arrondi: 0.3, accent: 4, sombre: true },
+            theme: Theme { commande: 56.0, ligne: 44.0, texte: 1.15, arrondi: 0.3, accent: 4, sombre: true, marge: 0.0, padding: 6.0 },
+            clavier: ReglagesClavier { disposition: Disposition::Qwerty, touche: 58.0, appui_long: 0.5, apercu: false, flottant: true, position: (0.25, 0.5) },
             fenetres: Some("C0.6000(F2:0,F1:3)".into()),
         };
         let lu = Reglages::lire(&r.ecrire());
         assert_eq!(lu.fenetres, r.fenetres);
+        assert_eq!(lu.clavier, r.clavier);
         let t = lu.theme;
-        assert_eq!((t.commande, t.ligne, t.accent, t.sombre), (56.0, 44.0, 4, true));
+        assert_eq!((t.commande, t.ligne, t.accent, t.sombre, t.marge, t.padding), (56.0, 44.0, 4, true, 0.0, 6.0));
         assert!((t.texte - 1.15).abs() < 1e-4 && (t.arrondi - 0.3).abs() < 1e-4);
     }
 
@@ -166,6 +204,8 @@ mod tests {
         assert_eq!(t.accent, 3);
         assert!(t.sombre);
         assert_eq!(r.fenetres, None);
+        // Le padding n'est jamais nul
+        assert_eq!(Reglages::lire("padding = 0").theme.padding, 4.0);
         assert_eq!(Reglages::lire(""), Reglages::default());
     }
 

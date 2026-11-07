@@ -103,6 +103,8 @@ pub struct Ui {
     clip: Option<Rect>,
     pointers: Vec<Pointer>,
     clicks: Vec<Id>,
+    /// Où chaque clic de l'image s'est levé.
+    clic_pos: Vec<(Id, f32, f32)>,
     double_taps: Vec<Id>,
     last_tap: Option<(Id, f64)>,
     drags: HashMap<Id, Drag>,
@@ -121,6 +123,7 @@ impl Ui {
             clip: None,
             pointers: Vec::new(),
             clicks: Vec::new(),
+            clic_pos: Vec::new(),
             double_taps: Vec::new(),
             last_tap: None,
             drags: HashMap::new(),
@@ -228,6 +231,7 @@ impl Ui {
             return;
         }
         self.clicks.push(w);
+        self.clic_pos.push((w, p.x, p.y));
         match self.last_tap {
             Some((prev, at)) if prev == w && t - at < DOUBLE_TAP_S => {
                 self.double_taps.push(w);
@@ -260,6 +264,11 @@ impl Ui {
 
     pub fn clicked(&self, id: Id) -> bool {
         self.clicks.contains(&id)
+    }
+
+    /// Où le doigt s'est levé, si `id` vient d'être cliqué.
+    pub fn clic_en(&self, id: Id) -> Option<(f32, f32)> {
+        self.clic_pos.iter().rev().find(|c| c.0 == id).map(|c| (c.1, c.2))
     }
 
     pub fn double_tapped(&self, id: Id) -> bool {
@@ -295,6 +304,7 @@ impl Ui {
         self.next.clear();
         self.clip = None;
         self.clicks.clear();
+        self.clic_pos.clear();
         self.double_taps.clear();
     }
 }
