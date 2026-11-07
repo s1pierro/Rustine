@@ -4,6 +4,7 @@
 //! l'écran est réservé aux gestes du système, mais les appuis y restent disponibles.
 
 use crate::draw::{Color, Rect};
+use crate::disque::{self, Analyse};
 use crate::explorateur::{self, Dossier, Nature};
 use crate::math::{self, Mat4};
 use crate::clavier::{self, Clavier, Disposition, Edition};
@@ -49,18 +50,34 @@ const ESSAI: Id = id("essai-clavier");
 const RADIO: Id = id("radio");
 const RADIO_CHAMP: Id = id("radio-adresse");
 const FICHIERS: Id = id("fichiers");
+const DISQUE: Id = id("disque");
+
+/// Les teintes des secteurs du premier anneau ; les anneaux suivants les éclaircissent.
+const TEINTES: [Color; 8] = [
+    [0x3B, 0x82, 0xF6, 255],
+    [0xEF, 0x44, 0x44, 255],
+    [0x22, 0xC5, 0x5E, 255],
+    [0xF5, 0x9E, 0x0B, 255],
+    [0xA8, 0x55, 0xF7, 255],
+    [0x14, 0xB8, 0xA6, 255],
+    [0xEC, 0x48, 0x99, 255],
+    [0x84, 0xCC, 0x16, 255],
+];
+/// Anneaux du graphique, autour du dossier central.
+const ANNEAUX: usize = 4;
 
 /// Deux flux pour essayer, tant que l'historique est vide.
 const SUGGESTIONS: [&str; 2] = ["https://icecast.radiofrance.fr/fip-midfi.mp3", "https://stream.radioparadise.com/aac-128"];
 
 /// Les vues qu'une fenêtre de la surface peut montrer.
-pub const VUES: [(&str, Icon); 6] = [("Cube", Icon::Cube), ("Couleurs", Icon::List), ("Aide", Icon::Help), ("Paramètres", Icon::Sliders), ("Radio", Icon::Radio), ("Fichiers", Icon::Dossier)];
+pub const VUES: [(&str, Icon); 7] = [("Cube", Icon::Cube), ("Couleurs", Icon::List), ("Aide", Icon::Help), ("Paramètres", Icon::Sliders), ("Radio", Icon::Radio), ("Fichiers", Icon::Dossier), ("Disque", Icon::Anneau)];
 pub const VUE_CUBE: u32 = 0;
 pub const VUE_COULEURS: u32 = 1;
 pub const VUE_AIDE: u32 = 2;
 pub const VUE_PARAMETRES: u32 = 3;
 pub const VUE_RADIO: u32 = 4;
 pub const VUE_FICHIERS: u32 = 5;
+pub const VUE_DISQUE: u32 = 6;
 
 /// Une vue 3D : son rectangle à l'écran et sa matrice.
 #[derive(Clone, Copy)]
@@ -109,6 +126,13 @@ pub struct App {
     racine: Option<PathBuf>,
     dossiers: HashMap<FenetreId, Dossier>,
     caches: bool,
+    /// L'occupation du disque : l'analyse du stockage (une pour toutes les fenêtres),
+    /// et dans chaque fenêtre Disque le dossier au centre et l'élément choisi.
+    analyse: Option<Analyse>,
+    centres: HashMap<FenetreId, Vec<usize>>,
+    choisis: HashMap<FenetreId, Vec<usize>>,
+    /// Une vue Disque est à l'écran : elle s'anime pendant l'analyse.
+    disque_visible: bool,
     /// Une vue Radio est à l'écran : ses vumètres s'animent tant qu'une voie joue.
     vumetres: bool,
     /// La radio : l'adresse saisie et les derniers flux écoutés ; le lecteur est
@@ -149,6 +173,10 @@ impl App {
             adresse: Edition::default(),
             vumetres: false,
             racine: None,
+            analyse: None,
+            centres: HashMap::new(),
+            choisis: HashMap::new(),
+            disque_visible: false,
             dossiers: HashMap::new(),
             caches: false,
             historique: Historique::default(),
@@ -169,6 +197,7 @@ impl App {
     /// Vrai s'il faut redessiner sans attendre un événement.
     pub fn animating(&self) -> bool {
         self.spin || self.shell.animating() || self.clavier.anime() || (self.vumetres && mixeur().actif() && !mixeur().en_pause())
+            || (self.disque_visible && self.analyse.as_ref().is_some_and(|a| a.en_cours()))
     }
 
     /// Une pastille ouvre son contenu, ou referme le panneau s'il l'affiche déjà.
@@ -271,6 +300,7 @@ impl App {
         let l = self.shell.layout(screen, dt);
         let placees = self.surface.frame(cx, l.workspace, &VUES);
         self.vumetres = placees.iter().any(|p| p.vue == VUE_RADIO);
+        self.disque_visible = placees.iter().any(|p| p.vue == VUE_DISQUE);
         for c in self.surface.changements() {
             match c {
                 // La nouvelle fenêtre part de la caméra de celle qu'on a partagée
@@ -281,6 +311,8 @@ impl App {
                 Changement::Fermee(f) => {
                     self.cams.remove(&f);
                     self.dossiers.remove(&f);
+                    self.centres.remove(&f);
+                    self.choisis.remove(&f);
                 }
                 Changement::Vue { .. } => {}
             }
@@ -370,6 +402,10 @@ impl App {
             VUE_FICHIERS => {
                 cx.dl.rrect(r, 0.0, col.surface);
                 self.fichiers(cx, p.id, r)
+            }
+            VUE_DISQUE => {
+                cx.dl.rrect(r, 0.0, col.surface);
+                self.disque(cx, p.id, r)
             }
             VUE_RADIO => {
                 cx.dl.rrect(r, 0.0, col.surface);
@@ -539,7 +575,11 @@ impl App {
         let etapes = explorateur::ariane(&dossier.chemin, self.racine.as_deref());
         let sep = "  ›  ";
         let largeur: f32 = etapes.iter().map(|(n, _)| cx.measure(n, 15.0)).sum::<f32>() + cx.measure(sep, 15.0) * (etapes.len() as f32 - 1.0);
-        let mut x = b.x + (b.w - largeur).min(0.0);
+        // La pastille + de la fenêtre occupe le coin haut gauche : le fil part à sa droite
+        let x0 = (r.x + cx.coin() + cx.commande() + cx.ecart()).max(b.x);
+        let place = b.x + b.w - x0;
+        let mut x = x0 + (place - largeur).min(0.0);
+        cx.clip(Some(Rect::new(x0, b.y, place.max(0.0), ligne).intersect(&b.rect())));
         for (i, (nom, chemin)) in etapes.iter().enumerate() {
             let w = cx.measure(nom, 15.0);
             let zone = Rect::new(x - 4.0 * d, b.y, w + 8.0 * d, ligne);
@@ -554,11 +594,12 @@ impl App {
                 x += cx.measure(sep, 15.0);
             }
         }
+        cx.clip(Some(b.rect()));
         b.y += ligne;
         cx.dl.rrect(Rect::new(b.rect().x, b.y, b.rect().w, d.max(1.0)), 0.0, col.ligne);
 
         if let Some(parent) = dossier.chemin.parent() {
-            if self.ligne_fichier(cx, &mut b, sub_id(base, 999_999), Icon::Haut, "Dossier parent", "", false) {
+            if self.ligne_fichier(cx, &mut b, sub_id(base, 999_999), Puce::Icone(Icon::Haut), "Dossier parent", "", false) {
                 aller = Some(parent.to_path_buf());
             }
         }
@@ -579,7 +620,7 @@ impl App {
             };
             let info = if e.dossier() { String::new() } else { explorateur::taille(e.taille) };
             let joue = lecture.as_deref() == chemin.to_str();
-            if self.ligne_fichier(cx, &mut b, sub_id(base, i), icone, &e.nom, &info, joue) {
+            if self.ligne_fichier(cx, &mut b, sub_id(base, i), Puce::Icone(icone), &e.nom, &info, joue) {
                 match e.nature {
                     Nature::Dossier => aller = Some(chemin),
                     Nature::Audio if joue => radio::lecteur_fichiers().arreter(),
@@ -607,7 +648,7 @@ impl App {
     /// Une ligne de l'explorateur : icône, nom, et à droite une information en chasse
     /// fixe. Hors de la zone visible, elle ne fait que réserver sa place.
     #[allow(clippy::too_many_arguments)]
-    fn ligne_fichier(&self, cx: &mut Cx, b: &mut crate::widgets::Body, id: Id, icone: Icon, nom: &str, info: &str, choisie: bool) -> bool {
+    fn ligne_fichier(&self, cx: &mut Cx, b: &mut crate::widgets::Body, id: Id, puce: Puce, nom: &str, info: &str, choisie: bool) -> bool {
         let (d, col) = (cx.dp, cx.couleurs());
         let r = Rect::new(b.rect().x, b.y, b.rect().w, (cx.theme.ligne * d).round());
         b.y += r.h;
@@ -620,10 +661,18 @@ impl App {
             cx.dl.rrect(r.inset(2.0 * d), cx.theme.rayon(r.h) * 0.45, col.puce);
         }
         let ic = (r.h * 0.5).round();
-        let teinte = if icone == Icon::Dossier || choisie { col.accent } else { col.pale };
-        cx.icon(Rect::new(b.x, r.cy() - ic / 2.0, ic, ic), icone, teinte);
+        match puce {
+            Puce::Icone(icone) => {
+                let teinte = if icone == Icon::Dossier || choisie { col.accent } else { col.pale };
+                cx.icon(Rect::new(b.x, r.cy() - ic / 2.0, ic, ic), icone, teinte);
+            }
+            Puce::Teinte(t) => {
+                let s = (ic * 0.8).round();
+                cx.dl.rrect(Rect::new(b.x + (ic - s) / 2.0, r.cy() - s / 2.0, s, s), 5.0 * d * cx.theme.arrondi.max(0.2), t);
+            }
+        }
         let x = b.x + ic + 12.0 * d;
-        let wi = if info.is_empty() { 0.0 } else { cx.measure(info, 12.0) + 12.0 * d };
+        let wi = if info.is_empty() { 0.0 } else { cx.mesure_mono(info, 12.0) + 12.0 * d };
         let fin = b.x + b.w - wi;
         cx.clip(Some(Rect::new(x, r.y, (fin - x).max(0.0), r.h).intersect(&vue)));
         cx.text_at(x, r.cy(), nom, 16.0, if choisie { col.accent } else { col.texte });
@@ -632,6 +681,173 @@ impl App {
             cx.mono_at(b.x + b.w - wi + 12.0 * d, r.cy(), info, 12.0, col.pale);
         }
         clic
+    }
+
+    /// La vue Disque, à la façon de l'analyseur d'utilisation des disques de GNOME :
+    /// l'occupation du stockage en haut, puis un graphique en anneaux (le dossier au
+    /// centre, ses enfants autour, sur quatre niveaux) et la liste de ses enfants.
+    /// Toucher un dossier le met au centre ; toucher le centre remonte.
+    fn disque(&mut self, cx: &mut Cx, f: FenetreId, r: Rect) -> String {
+        let (d, col) = (cx.dp, cx.couleurs());
+        let base = sub_id(DISQUE, f as usize);
+        if self.analyse.is_none() {
+            if let Some(racine) = self.racine.clone() {
+                self.analyse = Some(Analyse::lancer(racine, radio::reveiller));
+            }
+        }
+        let Some(analyse) = &self.analyse else { return "aucun stockage".into() };
+        let ligne = (cx.theme.ligne * d).round();
+        let marge = cx.pad();
+
+        // L'occupation du système de fichiers : texte et barre
+        let mut haut = r.y + marge;
+        if let Some((total, libre)) = disque::espace(&analyse.racine) {
+            let utilise = total.saturating_sub(libre);
+            let t = format!("{} utilisés sur {} · {} libres", explorateur::taille(utilise), explorateur::taille(total), explorateur::taille(libre));
+            // À droite de la pastille + du coin de la fenêtre
+            let x0 = r.x + cx.coin() + cx.commande() + cx.ecart();
+            cx.clip(Some(r));
+            cx.text_at(x0, haut + ligne * 0.35, &t, 14.0, col.texte);
+            let barre = Rect::new(x0, haut + ligne * 0.7, (r.right() - marge - x0).max(0.0), 6.0 * d);
+            cx.dl.rrect(barre, 3.0 * d, col.ligne);
+            let k = if total > 0 { utilise as f32 / total as f32 } else { 0.0 };
+            cx.dl.rrect(Rect::new(barre.x, barre.y, barre.w * k, barre.h), 3.0 * d, col.accent);
+            cx.clip(None);
+            haut += ligne + marge * 0.5;
+        }
+        let reste = Rect::new(r.x, haut, r.w, (r.bottom() - haut).max(0.0));
+
+        let Some((arbre, duree)) = analyse.resultat() else {
+            // Pendant l'analyse : ce qui est déjà compté
+            let (n, o) = (analyse.progres.fichiers.load(std::sync::atomic::Ordering::Relaxed), analyse.progres.octets.load(std::sync::atomic::Ordering::Relaxed));
+            cx.clip(Some(reste));
+            cx.centered(Rect::new(reste.x, reste.y, reste.w, reste.h * 0.5), "Analyse du stockage…", 16.0, col.texte);
+            cx.centered(Rect::new(reste.x, reste.cy() - ligne * 0.5, reste.w, ligne), &format!("{n} fichiers · {}", explorateur::taille(o)), 13.0, col.pale);
+            cx.clip(None);
+            return format!("analyse · {n} fichiers");
+        };
+
+        // Le dossier au centre : un chemin d'indices dans l'arbre (remis à la racine
+        // s'il ne mène plus nulle part, après une nouvelle analyse)
+        let mut centre = self.centres.get(&f).cloned().unwrap_or_default();
+        if arbre.suivre(&centre).is_none() {
+            centre.clear();
+        }
+        let noeud = arbre.suivre(&centre).unwrap_or(&arbre);
+        let mut choisi = self.choisis.get(&f).cloned().filter(|c| arbre.suivre(c).is_some());
+
+        // Le graphique et la liste : côte à côte en paysage, l'un sur l'autre sinon
+        let paysage = reste.w > reste.h * 1.15;
+        let (zone, liste) = if paysage {
+            let c = reste.h.min(reste.w * 0.6);
+            (Rect::new(reste.x, reste.y, c, reste.h), Rect::new(reste.x + c, reste.y, reste.w - c, reste.h))
+        } else {
+            let c = reste.w.min(reste.h * 0.6);
+            (Rect::new(reste.x, reste.y, reste.w, c), Rect::new(reste.x, reste.y + c, reste.w, reste.h - c))
+        };
+        let rayon = (zone.w.min(zone.h) / 2.0 - marge).max(0.0);
+        let c = [zone.cx(), zone.cy()];
+        let r0 = rayon * 0.28;
+        let large = (rayon - r0) / ANNEAUX as f32;
+        let ecart = 1.5 * d;
+        let teinte = |s: &disque::Secteur| -> Color {
+            let t = TEINTES[s.teinte % TEINTES.len()];
+            // Plus loin du centre, plus pâle ; les fichiers un peu éteints
+            let k = 0.17 * (s.anneau as f32 - 1.0) + if s.dossier { 0.0 } else { 0.25 };
+            let m = |a: u8, b: u8| (a as f32 + (b as f32 - a as f32) * k.min(0.8)) as u8;
+            [m(t[0], col.surface[0]), m(t[1], col.surface[1]), m(t[2], col.surface[2]), 255]
+        };
+        let secteurs = if rayon > 0.0 { disque::secteurs(noeud, ANNEAUX, 3.0 * d / rayon) } else { Vec::new() };
+        let q = std::f32::consts::FRAC_PI_2;
+        cx.clip(Some(zone));
+        cx.dl.rrect(Rect::new(c[0] - r0 + ecart, c[1] - r0 + ecart, 2.0 * (r0 - ecart), 2.0 * (r0 - ecart)), r0, col.puce);
+        for s in &secteurs {
+            let a = r0 + (s.anneau as f32 - 1.0) * large;
+            // L'élément choisi prend la couleur d'accent
+            let plein: Vec<usize> = centre.iter().chain(&s.chemin).copied().collect();
+            let t = if choisi.as_ref() == Some(&plein) { col.accent } else { teinte(s) };
+            cx.dl.secteur(c, a + ecart / 2.0, a + large - ecart / 2.0, s.a0 - q, s.a1 - q, ecart, t);
+        }
+        // Au centre : le nom et la taille du dossier
+        let nom = if centre.is_empty() { "Stockage" } else { noeud.nom.as_str() };
+        let interieur = Rect::new(c[0] - r0 * 0.85, c[1] - r0 * 0.6, r0 * 1.7, r0 * 1.2);
+        cx.clip(Some(interieur.intersect(&zone)));
+        cx.centered(Rect::new(interieur.x, c[1] - ligne * 0.45, interieur.w, ligne * 0.5), nom, 14.0, col.texte);
+        cx.centered(Rect::new(interieur.x, c[1] + ligne * 0.0, interieur.w, ligne * 0.45), &explorateur::taille(noeud.taille), 12.0, col.pale);
+        cx.clip(None);
+
+        // Toucher le graphique : un dossier vient au centre, un fichier est choisi, le
+        // centre remonte d'un niveau
+        let graphique = sub_id(base, 1);
+        cx.ui.region_add(graphique, zone, crate::ui::Sense::Click { scroll: None });
+        let mut nouveau_centre: Option<Vec<usize>> = None;
+        if let Some((x, y)) = cx.ui.clic_en(graphique) {
+            let (dx, dy) = (x - c[0], y - c[1]);
+            let dist = (dx * dx + dy * dy).sqrt();
+            if dist < r0 {
+                if !centre.is_empty() {
+                    let mut p = centre.clone();
+                    p.pop();
+                    nouveau_centre = Some(p);
+                }
+            } else if large > 0.0 {
+                let anneau = ((dist - r0) / large) as usize + 1;
+                let angle = (dy.atan2(dx) + q).rem_euclid(std::f32::consts::TAU);
+                if let Some(s) = disque::toucher(&secteurs, anneau, angle) {
+                    let plein: Vec<usize> = centre.iter().chain(&s.chemin).copied().collect();
+                    if s.dossier {
+                        nouveau_centre = Some(plein);
+                    } else {
+                        choisi = Some(plein);
+                    }
+                }
+            }
+        }
+
+        // La liste des enfants du centre, avec la teinte de leur secteur
+        let scroll = sub_id(base, hachage_indices(&centre));
+        let mut b = cx.body(scroll, liste, &self.scrolls);
+        if !centre.is_empty() && self.ligne_fichier(cx, &mut b, sub_id(scroll, 999_999), Puce::Icone(Icon::Haut), "Dossier parent", "", false) {
+            let mut p = centre.clone();
+            p.pop();
+            nouveau_centre = Some(p);
+        }
+        for (i, e) in noeud.enfants.iter().enumerate() {
+            let s = disque::Secteur { chemin: vec![i], anneau: 1, a0: 0.0, a1: 0.0, teinte: i, dossier: e.dossier };
+            let part = if noeud.taille > 0 { 100.0 * e.taille as f32 / noeud.taille as f32 } else { 0.0 };
+            let info = format!("{} · {:>3.0} %", explorateur::taille(e.taille), part);
+            let plein: Vec<usize> = centre.iter().copied().chain([i]).collect();
+            let est_choisi = choisi.as_ref() == Some(&plein);
+            let puce = if e.dossier || est_choisi { Puce::Teinte(teinte(&s)) } else { Puce::Icone(Icon::Fichier) };
+            if self.ligne_fichier(cx, &mut b, sub_id(scroll, i), puce, &e.nom, &info, est_choisi) {
+                if e.dossier {
+                    nouveau_centre = Some(plein);
+                } else {
+                    choisi = Some(plein);
+                }
+            }
+        }
+        b.y += cx.ecart();
+        let relancer = cx.button(&mut b, sub_id(scroll, 999_998), "Relancer l'analyse");
+        cx.body_end(b, &mut self.scrolls);
+
+        let statut = match choisi.as_ref().and_then(|c| arbre.suivre(c)) {
+            Some(n) => format!("{} · {}", n.nom, explorateur::taille(n.taille)),
+            None => format!("{} fichiers · {} · {:.1} s", arbre.fichiers, explorateur::taille(arbre.taille), duree),
+        };
+        if let Some(p) = nouveau_centre {
+            self.centres.insert(f, p);
+            choisi = None;
+        }
+        match choisi {
+            Some(c) => self.choisis.insert(f, c),
+            None => self.choisis.remove(&f),
+        };
+        if relancer {
+            let racine = analyse.racine.clone();
+            self.analyse = Some(Analyse::lancer(racine, radio::reveiller));
+        }
+        statut
     }
 
     /// Le tableau du mixeur : la voie d'essai à lancer, chaque piste connue avec son
@@ -927,6 +1143,20 @@ impl App {
         let [r, g, b, _] = COLORS[self.color].1;
         Scene { workspace: w, vues, fond: Theme::default().couleurs().fond, color: [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0], tint: if self.faces { 0.25 } else { 0.0 } }
     }
+}
+
+/// Ce qui précède le nom d'une ligne de liste : une icône ou une pastille de couleur.
+enum Puce {
+    Icone(Icon),
+    Teinte(Color),
+}
+
+/// Un nombre tiré d'un chemin d'indices, pour donner à chaque dossier son défilement.
+fn hachage_indices(c: &[usize]) -> usize {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    c.hash(&mut h);
+    h.finish() as usize
 }
 
 /// Un nombre tiré d'un chemin, pour donner à chaque dossier son défilement.

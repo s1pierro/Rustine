@@ -124,6 +124,8 @@ pub enum Icon {
     Photo,
     Film,
     Haut,
+    /// L'occupation du disque : un anneau en trois secteurs.
+    Anneau,
 }
 
 /// Les deux couleurs de la rustine, quel que soit le thème.
@@ -218,6 +220,12 @@ impl Cx<'_> {
     }
 
     /// Texte en police à chasse fixe (lignes d'état), centré verticalement sur `cy`.
+    /// Largeur d'un texte en chasse fixe.
+    pub fn mesure_mono(&mut self, s: &str, size: f32) -> f32 {
+        let px = self.px(size);
+        self.text.mesurer(s, px, true)
+    }
+
     pub fn mono_at(&mut self, x: f32, cy: f32, s: &str, size: f32, color: Color) {
         let px = self.px(size);
         let base = cy + self.text.center_offset(px);
@@ -230,7 +238,7 @@ impl Cx<'_> {
         self.label(right - w, cy, s, size, color);
     }
 
-    fn centered(&mut self, r: Rect, s: &str, size: f32, color: Color) {
+    pub fn centered(&mut self, r: Rect, s: &str, size: f32, color: Color) {
         let w = self.measure(s, size);
         self.label(r.cx() - w / 2.0, r.cy(), s, size, color);
     }
@@ -386,6 +394,12 @@ impl Cx<'_> {
                         trait_(self, &[(-9.5, -7.5), (9.5, -7.5), (9.5, 7.5), (-9.5, 7.5), (-9.5, -7.5)]);
                         trait_(self, &[(-2.5, -3.5), (3.5, 0.0), (-2.5, 3.5), (-2.5, -3.5)]);
                     }
+                }
+            }
+            Icon::Anneau => {
+                let q = std::f32::consts::FRAC_PI_2;
+                for (a0, a1) in [(-q, 0.55), (0.55, 2.2), (2.2, 3.0 * q)] {
+                    self.dl.secteur([cx, cy], 4.5 * u, 10.5 * u, a0, a1, 1.6 * u, color);
                 }
             }
             Icon::Haut => {

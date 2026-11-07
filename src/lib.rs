@@ -10,6 +10,7 @@ pub mod android;
 pub mod audio;
 pub mod clavier;
 pub mod demo;
+pub mod disque;
 pub mod draw;
 pub mod explorateur;
 pub mod gles;

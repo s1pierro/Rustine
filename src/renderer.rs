@@ -43,7 +43,17 @@ uniform sampler2D u_atlas;
 out vec4 o_color;
 void main() {
   float a;
-  if (v_shape.z < 0.0) {
+  if (v_shape.z < -1.5) {
+    // Secteur d'anneau : rayons (x, y), angles (uv), écart sur les bords droits (w)
+    float r = length(v_local);
+    float dr = max(v_shape.x - r, r - v_shape.y);
+    float demi = 0.5 * (v_uv.y - v_uv.x);
+    float milieu = v_uv.x + demi;
+    float ang = atan(v_local.y, v_local.x);
+    float da = abs(mod(ang - milieu + 3.14159265, 6.2831853) - 3.14159265) - demi;
+    float d = demi >= 3.1415 ? dr : max(dr, da * max(r, 1.0) + 0.5 * v_shape.w);
+    a = 1.0 - smoothstep(-0.6, 0.6, d);
+  } else if (v_shape.z < 0.0) {
     a = texture(u_atlas, v_uv).r;
   } else {
     vec2 q = abs(v_local) - v_shape.xy + v_shape.z;

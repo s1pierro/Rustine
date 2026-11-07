@@ -128,6 +128,37 @@ impl DrawList {
         self.push([corner(-1., -1.), corner(1., -1.), corner(-1., 1.), corner(1., 1.)]);
     }
 
+    /// Secteur d'anneau plein, de centre `c`, entre les rayons `r0` et `r1`, de l'angle
+    /// `a0` à `a1` (radians, sens horaire à l'écran, 0 vers la droite). `ecart` laisse un
+    /// liseré de cette largeur (en pixels) sur ses bords droits, pour séparer les
+    /// secteurs voisins. La forme est calculée dans le nuanceur, antialiasée.
+    #[allow(clippy::too_many_arguments)]
+    pub fn secteur(&mut self, c: [f32; 2], r0: f32, r1: f32, a0: f32, a1: f32, ecart: f32, color: Color) {
+        if r1 <= r0 || a1 <= a0 {
+            return;
+        }
+        // Le rectangle qui l'enveloppe : ses quatre coins et les axes qu'il traverse
+        let mut b = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
+        let mut prendre = |a: f32, r: f32| {
+            let (x, y) = (a.cos() * r, a.sin() * r);
+            b = [b[0].min(x), b[1].min(y), b[2].max(x), b[3].max(y)];
+        };
+        for a in [a0, a1] {
+            prendre(a, r0);
+            prendre(a, r1);
+        }
+        let quart = std::f32::consts::FRAC_PI_2;
+        let mut k = (a0 / quart).ceil();
+        while k * quart < a1 {
+            prendre(k * quart, r1);
+            k += 1.0;
+        }
+        let e = 1.5;
+        let shape = [r0, r1, -2.0, ecart];
+        let v = |x: f32, y: f32| Vertex { pos: [c[0] + x, c[1] + y], local: [x, y], shape, uv: [a0, a1], color };
+        self.push([v(b[0] - e, b[1] - e), v(b[2] + e, b[1] - e), v(b[0] - e, b[3] + e), v(b[2] + e, b[3] + e)]);
+    }
+
     pub fn glyph(&mut self, r: Rect, uv0: [f32; 2], uv1: [f32; 2], color: Color) {
         let v = |x: f32, y: f32, u: f32, w: f32| Vertex { pos: [x, y], local: [0.0, 0.0], shape: [0.0, 0.0, -1.0, 0.0], uv: [u, w], color };
         self.push([

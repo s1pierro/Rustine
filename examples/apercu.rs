@@ -20,16 +20,19 @@ struct Shot {
     end: bool,
     help: bool,
     fenetres: bool,
+    /// Un dossier à analyser dans une fenêtre Disque.
+    disque: Option<&'static str>,
 }
 
 fn main() {
     let dir = std::env::args().nth(1).expect("dossier de sortie");
     let shots = [
-        Shot { name: "tablette-ferme", w: 1920, h: 1200, dp: 1.5, start: false, end: false, help: false, fenetres: false },
-        Shot { name: "tablette-deux", w: 1920, h: 1200, dp: 1.5, start: true, end: true, help: false, fenetres: false },
-        Shot { name: "tablette-portrait", w: 1200, h: 1920, dp: 1.5, start: true, end: true, help: true, fenetres: false },
-        Shot { name: "tablette-fenetres", w: 1920, h: 1200, dp: 1.5, start: false, end: false, help: false, fenetres: true },
-        Shot { name: "telephone", w: 2400, h: 1080, dp: 2.5, start: false, end: true, help: false, fenetres: false },
+        Shot { name: "tablette-ferme", w: 1920, h: 1200, dp: 1.5, start: false, end: false, help: false, fenetres: false, disque: None },
+        Shot { name: "tablette-deux", w: 1920, h: 1200, dp: 1.5, start: true, end: true, help: false, fenetres: false, disque: None },
+        Shot { name: "tablette-portrait", w: 1200, h: 1920, dp: 1.5, start: true, end: true, help: true, fenetres: false, disque: None },
+        Shot { name: "tablette-fenetres", w: 1920, h: 1200, dp: 1.5, start: false, end: false, help: false, fenetres: true, disque: None },
+        Shot { name: "disque", w: 1920, h: 1200, dp: 1.5, start: false, end: false, help: false, fenetres: false, disque: Some(env!("CARGO_MANIFEST_DIR")) },
+        Shot { name: "telephone", w: 2400, h: 1080, dp: 2.5, start: false, end: true, help: false, fenetres: false, disque: None },
     ];
     let mut egl = Egl::new(true).expect("EGL");
     egl.attach_pbuffer(2400, 2400).expect("pbuffer");
@@ -54,6 +57,15 @@ fn main() {
             app.surface.changer_vue(1, rustine::demo::VUE_AIDE);
         }
 
+        if let Some(d) = s.disque {
+            // Le graphique en anneaux, à côté de l'explorateur
+            use rustine::surface::Sens;
+            app.racine_en(Some(d.into()));
+            let f = app.surface.partager(1, Sens::Colonnes, 0.62).unwrap();
+            app.surface.changer_vue(1, rustine::demo::VUE_DISQUE);
+            app.surface.changer_vue(f, rustine::demo::VUE_FICHIERS);
+        }
+
         let mut scene = None;
         for i in 0..60 {
             if i == 30 && s.help {
@@ -66,6 +78,10 @@ fn main() {
             let mut cx = Cx { ui: &mut ui, text: &mut text, dl: &mut dl, dp: s.dp, theme: Default::default() };
             scene = Some(app.frame(&mut cx, screen, 0.05));
             ui.end_frame();
+            if s.disque.is_some() {
+                // Laisse l'analyse finir
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
         }
         render.draw(w, h, &scene.unwrap(), &dl, &mut text);
 

@@ -7,7 +7,7 @@ OpenGL ES 3, dans un APK de moins de 500 Ko.
 
 ## Télécharger
 
-**[Télécharger l'APK (version 0.6)](https://github.com/s1pierro/Rustine/releases/download/v0.6/rustine-0.6.apk)**
+**[Télécharger l'APK (version 0.7)](https://github.com/s1pierro/Rustine/releases/download/v0.7/rustine-0.7.apk)**
 
 Pour les appareils ARM 64 bits, sous Android 8.0 ou plus récent, avec OpenGL ES 3.
 L'APK étant signé avec une clé de debug, Android demandera d'autoriser
@@ -17,7 +17,7 @@ l'installation depuis une source inconnue.
 
 - Espace de travail qui s'adapte aux panneaux, la 3D suit sa forme
 - Surface de travail partagée en fenêtres, chacune avec sa vue (3D, liste,
-  aide, paramètres, radio, fichiers) et une seule barre en bas : icône et titre de la vue, ligne
+  aide, paramètres, radio, fichiers, disque) et une seule barre en bas : icône et titre de la vue, ligne
   d'état, poignée. Glisser la pastille + partage la fenêtre, toucher le titre
   change sa vue ou la ferme, la poignée la redimensionne et montre par un tiret
   chaque bord qu'elle peut déplacer
@@ -41,6 +41,9 @@ l'installation depuis une source inconnue.
   ordre naturel, tailles, icônes par nature, fichiers cachés à la demande ; un
   fichier audio se lit dans la piste « Fichier » du mixeur, et continue en
   arrière-plan
+- Vue Disque : occupation du stockage en graphique à anneaux concentriques
+  (le dossier au centre, quatre niveaux autour), avec la place libre et la liste
+  des éléments ; toucher un dossier le met au centre, le centre remonte
 - Mixeur : une seule sortie AAudio où se mélangent des voies, chacune à la
   fréquence de sa source (convertie à celle de l'appareil) ; par piste, volume,
   balance, muet, solo et priorité (une piste prioritaire qui sonne baisse les
@@ -68,7 +71,8 @@ l'installation depuis une source inconnue.
   aucun appel OpenGL, donc testable partout
 - `src/gles.rs`, `renderer.rs`, `android.rs`, `acces.rs` : OpenGL ES et Android
 - `src/audio.rs`, `mixage.rs`, `radio.rs` : AAudio, le mixeur et la lecture de flux
-  et de fichiers ; `src/explorateur.rs` : le contenu des dossiers
+  et de fichiers ; `src/explorateur.rs`, `disque.rs` : le contenu des dossiers
+  et l'occupation du disque
   (`libmediandk`) ; `java/…/Lecture.java` : le service de lecture
 - `src/demo.rs` : l'application de démonstration
 - `examples/apercu.rs` : dessine l'interface hors écran sur le processeur
