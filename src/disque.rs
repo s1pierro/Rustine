@@ -192,6 +192,41 @@ pub fn toucher(s: &[Secteur], anneau: usize, angle: f32) -> Option<&Secteur> {
     s.iter().find(|s| s.anneau == anneau && angle >= s.a0 && angle < s.a1)
 }
 
+/// L'emplacement d'un dossier dans le graphique vu depuis la racine : son nœud, son
+/// angle à chaque niveau (du premier anneau jusqu'à lui) et la teinte de sa branche
+/// (l'indice de son ancêtre du premier anneau).
+pub struct Place<'a> {
+    pub noeud: &'a Noeud,
+    pub arcs: Vec<(f32, f32)>,
+    pub teinte: Option<usize>,
+}
+
+/// L'angle du `i`-ième enfant de `parent`, dans l'angle `span` du parent.
+pub fn arc_enfant(parent: &Noeud, span: (f32, f32), i: usize) -> (f32, f32) {
+    if parent.taille == 0 {
+        return (span.0, span.0);
+    }
+    let k = (span.1 - span.0) / parent.taille as f32;
+    let avant: u64 = parent.enfants[..i].iter().map(|e| e.taille).sum();
+    let a0 = span.0 + k * avant as f32;
+    (a0, a0 + k * parent.enfants[i].taille as f32)
+}
+
+/// Suit des noms depuis la racine (même disposition que le graphique centré sur
+/// elle). `None` si un nom n'est pas dans l'arbre (créé après l'analyse…).
+pub fn placer<'a, S: AsRef<str>>(racine: &'a Noeud, noms: &[S]) -> Option<Place<'a>> {
+    let mut p = Place { noeud: racine, arcs: Vec::new(), teinte: None };
+    let mut span = (0.0, std::f32::consts::TAU);
+    for nom in noms {
+        let i = p.noeud.enfants.iter().position(|e| e.nom == nom.as_ref())?;
+        span = arc_enfant(p.noeud, span, i);
+        p.arcs.push(span);
+        p.teinte.get_or_insert(i);
+        p.noeud = &p.noeud.enfants[i];
+    }
+    Some(p)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -222,6 +257,11 @@ mod tests {
         assert!(s[3].teinte == 1 && proche(s[3].a0, 0.75 * tau));
         assert_eq!(toucher(&s, 2, 1.0).map(|s| s.chemin.clone()), Some(vec![0, 0]));
         assert_eq!(arbre.suivre(&[0, 1]).map(|n| n.nom.as_str()), Some("b"));
+        // La place d'un dossier suit la même disposition que les secteurs
+        let p = placer(&arbre, &["Music", "b"]).unwrap();
+        assert_eq!((p.noeud.nom.as_str(), p.teinte, p.arcs.len()), ("b", Some(0), 2));
+        assert!(proche(p.arcs[1].0, s[2].a0) && proche(p.arcs[1].1, s[2].a1));
+        assert!(placer(&arbre, &["absent"]).is_none());
         // Un seuil écarte les secteurs trop étroits sans décaler les suivants
         let s = secteurs(&arbre, 1, 0.3 * tau);
         assert_eq!(s.len(), 1);

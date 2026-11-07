@@ -564,6 +564,18 @@ impl App {
         }
         let dossier = self.dossiers[&f].clone();
         let base = sub_id(FICHIERS, f as usize);
+        // Les empreintes viennent de l'analyse du stockage, lancée au besoin
+        if self.analyse.is_none() {
+            if let Some(racine) = self.racine.clone() {
+                self.analyse = Some(Analyse::lancer(racine, radio::reveiller));
+            }
+        }
+        let arbre = self.analyse.as_ref().and_then(|a| a.resultat().map(|(n, _)| (n, a.racine.clone())));
+        let situation = arbre.as_ref().and_then(|(n, racine)| {
+            let rel = dossier.chemin.strip_prefix(racine).ok()?;
+            let noms: Vec<String> = rel.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect();
+            disque::placer(n, &noms)
+        });
         // Un défilement par dossier : en revenant au parent, on retrouve sa position
         let scroll = sub_id(base, hachage(&dossier.chemin));
         let lecture = radio::lecteur_fichiers().adresse.clone();
@@ -620,7 +632,18 @@ impl App {
             };
             let info = if e.dossier() { String::new() } else { explorateur::taille(e.taille) };
             let joue = lecture.as_deref() == chemin.to_str();
-            if self.ligne_fichier(cx, &mut b, sub_id(base, i), Puce::Icone(icone), &e.nom, &info, joue) {
+            // L'empreinte d'un dossier : sa place dans le graphique du stockage
+            let puce = match (&situation, e.dossier()) {
+                (Some(p), true) => p.noeud.enfants.iter().position(|n| n.nom == e.nom && n.dossier).map(|k| {
+                    let span = p.arcs.last().copied().unwrap_or((0.0, std::f32::consts::TAU));
+                    let mut arcs = p.arcs.clone();
+                    arcs.push(disque::arc_enfant(p.noeud, span, k));
+                    Puce::Empreinte(arcs, TEINTES[p.teinte.unwrap_or(k) % TEINTES.len()])
+                }),
+                _ => None,
+            };
+            let puce = puce.unwrap_or(Puce::Icone(icone));
+            if self.ligne_fichier(cx, &mut b, sub_id(base, i), puce, &e.nom, &info, joue) {
                 match e.nature {
                     Nature::Dossier => aller = Some(chemin),
                     Nature::Audio if joue => radio::lecteur_fichiers().arreter(),
@@ -670,6 +693,7 @@ impl App {
                 let s = (ic * 0.8).round();
                 cx.dl.rrect(Rect::new(b.x + (ic - s) / 2.0, r.cy() - s / 2.0, s, s), 5.0 * d * cx.theme.arrondi.max(0.2), t);
             }
+            Puce::Empreinte(arcs, t) => empreinte(cx, Rect::new(b.x, r.cy() - ic / 2.0, ic, ic), &arcs, t),
         }
         let x = b.x + ic + 12.0 * d;
         let wi = if info.is_empty() { 0.0 } else { cx.mesure_mono(info, 12.0) + 12.0 * d };
@@ -1149,6 +1173,41 @@ impl App {
 enum Puce {
     Icone(Icon),
     Teinte(Color),
+    /// L'empreinte d'un dossier : ses angles du premier anneau jusqu'à lui, et la
+    /// teinte de sa branche.
+    Empreinte(Vec<(f32, f32)>, Color),
+}
+
+/// Niveaux montrés au plus dans une empreinte : au-delà, les plus proches du dossier.
+const EMPREINTE_NIVEAUX: usize = 5;
+/// Ouverture minimale d'un secteur d'empreinte, pour qu'il reste visible.
+const EMPREINTE_MIN: f32 = 0.4;
+
+/// Dessine une empreinte dans le carré `r` : un anneau par niveau, les ancêtres en
+/// pâle, le dossier en pleine teinte.
+fn empreinte(cx: &mut Cx, r: Rect, arcs: &[(f32, f32)], teinte: Color) {
+    let (d, col) = (cx.dp, cx.couleurs());
+    let arcs = &arcs[arcs.len().saturating_sub(EMPREINTE_NIVEAUX)..];
+    if arcs.is_empty() {
+        return;
+    }
+    let c = [r.cx(), r.cy()];
+    let grand = r.w.min(r.h) / 2.0;
+    let petit = grand * 0.3;
+    let large = (grand - petit) / arcs.len() as f32;
+    let (ecart, q, tau) = (0.8 * d, std::f32::consts::FRAC_PI_2, std::f32::consts::TAU);
+    let pale = |k: f32| -> Color {
+        let m = |a: u8, b: u8| (a as f32 + (b as f32 - a as f32) * k) as u8;
+        [m(teinte[0], col.surface[0]), m(teinte[1], col.surface[1]), m(teinte[2], col.surface[2]), 255]
+    };
+    for (n, &(a0, a1)) in arcs.iter().enumerate() {
+        let (ra, rb) = (petit + n as f32 * large + ecart / 2.0, petit + (n + 1) as f32 * large - ecart / 2.0);
+        // Le fond de l'anneau, puis le secteur, élargi s'il est trop fin
+        cx.dl.secteur(c, ra, rb, -q, tau - q, 0.0, col.ligne);
+        let (m, o) = ((a0 + a1) / 2.0, (a1 - a0).max(EMPREINTE_MIN) / 2.0);
+        let t = if n + 1 == arcs.len() { teinte } else { pale(0.55) };
+        cx.dl.secteur(c, ra, rb, m - o - q, m + o - q, 0.0, t);
+    }
 }
 
 /// Un nombre tiré d'un chemin d'indices, pour donner à chaque dossier son défilement.

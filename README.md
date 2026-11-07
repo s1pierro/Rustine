@@ -7,7 +7,7 @@ OpenGL ES 3, dans un APK de moins de 500 Ko.
 
 ## Télécharger
 
-**[Télécharger l'APK (version 0.7)](https://github.com/s1pierro/Rustine/releases/download/v0.7/rustine-0.7.apk)**
+**[Télécharger l'APK (version 0.8)](https://github.com/s1pierro/Rustine/releases/download/v0.8/rustine-0.8.apk)**
 
 Pour les appareils ARM 64 bits, sous Android 8.0 ou plus récent, avec OpenGL ES 3.
 L'APK étant signé avec une clé de debug, Android demandera d'autoriser
@@ -38,7 +38,9 @@ l'installation depuis une source inconnue.
   la vue Radio lit un flux web (MP3, AAC, Ogg… en HTTP ou HTTPS), avec volume, et
   garde les derniers flux écoutés dans `Rustine/radios.txt`, à côté des réglages
 - Vue Fichiers : explorateur du stockage, fil d'Ariane, dossiers d'abord puis
-  ordre naturel, tailles, icônes par nature, fichiers cachés à la demande ; un
+  ordre naturel, tailles, icônes par nature, fichiers cachés à la demande ;
+  chaque dossier porte son empreinte, sa place dans le graphique à anneaux du
+  stockage ; un
   fichier audio se lit dans la piste « Fichier » du mixeur, et continue en
   arrière-plan
 - Vue Disque : occupation du stockage en graphique à anneaux concentriques
