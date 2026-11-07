@@ -7,7 +7,7 @@ OpenGL ES 3, dans un APK de moins de 300 Ko.
 
 ## Télécharger
 
-**[Télécharger l'APK (version 0.1)](https://github.com/s1pierro/Rustine/releases/download/v0.1/rustine-0.1.apk)**
+**[Télécharger l'APK (version 0.3)](https://github.com/s1pierro/Rustine/releases/download/v0.3/rustine-0.3.apk)**
 
 Pour les appareils ARM 64 bits, sous Android 8.0 ou plus récent, avec OpenGL ES 3.
 L'APK étant signé avec une clé de debug, Android demandera d'autoriser
