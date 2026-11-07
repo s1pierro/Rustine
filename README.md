@@ -1,13 +1,13 @@
 # Rustine
 
 Socle d'applications Android en Rust : interface tactile moderne et 3D en
-OpenGL ES 3, dans un APK de moins de 300 Ko.
+OpenGL ES 3, dans un APK de moins de 500 Ko.
 
 ![Interface de Rustine : panneaux latéraux, pastilles et cube 3D](docs/apercu.png)
 
 ## Télécharger
 
-**[Télécharger l'APK (version 0.4)](https://github.com/s1pierro/Rustine/releases/download/v0.4/rustine-0.4.apk)**
+**[Télécharger l'APK (version 0.6)](https://github.com/s1pierro/Rustine/releases/download/v0.6/rustine-0.6.apk)**
 
 Pour les appareils ARM 64 bits, sous Android 8.0 ou plus récent, avec OpenGL ES 3.
 L'APK étant signé avec une clé de debug, Android demandera d'autoriser
@@ -17,7 +17,7 @@ l'installation depuis une source inconnue.
 
 - Espace de travail qui s'adapte aux panneaux, la 3D suit sa forme
 - Surface de travail partagée en fenêtres, chacune avec sa vue (3D, liste,
-  aide, paramètres, radio) et une seule barre en bas : icône et titre de la vue, ligne
+  aide, paramètres, radio, fichiers) et une seule barre en bas : icône et titre de la vue, ligne
   d'état, poignée. Glisser la pastille + partage la fenêtre, toucher le titre
   change sa vue ou la ferme, la poignée la redimensionne et montre par un tiret
   chaque bord qu'elle peut déplacer
@@ -37,6 +37,10 @@ l'installation depuis une source inconnue.
 - Son par AAudio et décodage par `libmediandk`, tous deux chargés à l'exécution :
   la vue Radio lit un flux web (MP3, AAC, Ogg… en HTTP ou HTTPS), avec volume, et
   garde les derniers flux écoutés dans `Rustine/radios.txt`, à côté des réglages
+- Vue Fichiers : explorateur du stockage, fil d'Ariane, dossiers d'abord puis
+  ordre naturel, tailles, icônes par nature, fichiers cachés à la demande ; un
+  fichier audio se lit dans la piste « Fichier » du mixeur, et continue en
+  arrière-plan
 - Mixeur : une seule sortie AAudio où se mélangent des voies, chacune à la
   fréquence de sa source (convertie à celle de l'appareil) ; par piste, volume,
   balance, muet, solo et priorité (une piste prioritaire qui sonne baisse les
@@ -64,6 +68,7 @@ l'installation depuis une source inconnue.
   aucun appel OpenGL, donc testable partout
 - `src/gles.rs`, `renderer.rs`, `android.rs`, `acces.rs` : OpenGL ES et Android
 - `src/audio.rs`, `mixage.rs`, `radio.rs` : AAudio, le mixeur et la lecture de flux
+  et de fichiers ; `src/explorateur.rs` : le contenu des dossiers
   (`libmediandk`) ; `java/…/Lecture.java` : le service de lecture
 - `src/demo.rs` : l'application de démonstration
 - `examples/apercu.rs` : dessine l'interface hors écran sur le processeur
@@ -78,12 +83,19 @@ polices du système.
 Le build se fait directement sur Android, dans [Termux](https://termux.dev),
 avec le Rust natif de Termux :
 
-    pkg install rust aapt apksigner zip unzip curl openjdk-17
+    pkg install rust aapt apksigner zip unzip curl git openjdk-21 d8
     bash build.sh
 
 L'APK est produit dans `dist/rustine.apk`. La compilation a lieu dans
 `~/.cache/rust-apk/rustine`, pour fonctionner aussi depuis le stockage partagé,
 où rien ne peut s'exécuter.
+
+## Tutoriel
+
+[Construire des APK Android en Rust, sur Android, avec Termux](docs/tutoriel.md) :
+de l'installation de Termux à l'APK installé, comment partir de Rustine pour sa
+propre application, et la passerelle (`passerelle/`) qui permet de construire
+depuis Debian, par exemple avec Claude Code.
 
 ## Licence
 

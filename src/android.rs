@@ -183,7 +183,7 @@ fn render_loop() -> Result<(), String> {
     let mut relire = true;
 
     loop {
-        let (window, changed, events, dp, chemin) = {
+        let (window, changed, events, dp, chemin, racine) = {
             let mut s = SHARED.lock().unwrap();
             loop {
                 let drawing = !egl.surface.is_null();
@@ -204,7 +204,9 @@ fn render_loop() -> Result<(), String> {
                 (Some(r), true) => Some(r.join("Rustine").join(NOM)),
                 _ => s.dossier.as_ref().map(|d| d.join(NOM)),
             };
-            (s.window, changed, std::mem::take(&mut s.events), s.dp, chemin)
+            // Sans l'accès, l'explorateur y montre comment l'accorder
+            let racine = s.racine.clone();
+            (s.window, changed, std::mem::take(&mut s.events), s.dp, chemin, racine)
         };
         if fichier.as_ref().map(|f| &f.chemin) != chemin.as_ref() {
             // Le nouveau fichier part des réglages actuels s'il n'existe pas encore
@@ -247,6 +249,7 @@ fn render_loop() -> Result<(), String> {
                 app.appliquer(r);
             }
             app.fichier_reglages = fichier.as_ref().map(|f| f.chemin.display().to_string());
+            app.racine_en(racine.clone());
             // L'historique des radios vit à côté des réglages de l'interface
             if let Some(d) = fichier.as_ref().and_then(|f| f.chemin.parent()) {
                 app.historique_en(d.join(crate::radio::HISTORIQUE));

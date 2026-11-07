@@ -116,6 +116,14 @@ pub enum Icon {
     Lecture,
     Pause,
     Stop,
+    /// L'explorateur : un dossier, un fichier, et par nature une note, une photo, un
+    /// film ; une flèche vers le dossier parent.
+    Dossier,
+    Fichier,
+    Note,
+    Photo,
+    Film,
+    Haut,
 }
 
 /// Les deux couleurs de la rustine, quel que soit le thème.
@@ -348,6 +356,42 @@ impl Cx<'_> {
                 for x in [-6.5, 2.5] {
                     self.dl.rrect(Rect::new(cx + x * u, cy - 7.5 * u, 4.0 * u, 15.0 * u), 1.2 * u, color);
                 }
+            }
+            Icon::Dossier => {
+                self.dl.rrect(Rect::new(cx - 10.0 * u, cy - 8.5 * u, 9.0 * u, 5.0 * u), 1.5 * u, color);
+                self.dl.rrect(Rect::new(cx - 10.0 * u, cy - 5.5 * u, 20.0 * u, 14.0 * u), 2.0 * u, color);
+            }
+            Icon::Fichier | Icon::Note | Icon::Photo | Icon::Film => {
+                let e = 1.8 * u;
+                let trait_ = |s: &mut Self, l: &[(f32, f32)]| {
+                    for w in l.windows(2) {
+                        s.dl.line(p(w[0].0, w[0].1), p(w[1].0, w[1].1), e, color);
+                    }
+                };
+                match icon {
+                    Icon::Fichier => {
+                        trait_(self, &[(-6.5, -9.5), (2.5, -9.5), (7.0, -5.0), (7.0, 9.5), (-6.5, 9.5), (-6.5, -9.5)]);
+                        trait_(self, &[(2.5, -9.5), (2.5, -5.0), (7.0, -5.0)]);
+                    }
+                    Icon::Note => {
+                        self.dl.rrect(Rect::new(cx - 7.5 * u, cy + 2.5 * u, 7.0 * u, 7.0 * u), 3.5 * u, color);
+                        trait_(self, &[(-1.4, 6.0), (-1.4, -9.0), (6.5, -6.0), (6.5, -3.0), (-1.4, -6.0)]);
+                    }
+                    Icon::Photo => {
+                        trait_(self, &[(-9.5, -7.5), (9.5, -7.5), (9.5, 7.5), (-9.5, 7.5), (-9.5, -7.5)]);
+                        trait_(self, &[(-7.0, 5.0), (-2.0, -1.0), (2.0, 3.0), (4.0, 1.0), (7.0, 5.0)]);
+                        self.dl.rrect(Rect::new(cx + 2.5 * u, cy - 5.0 * u, 3.0 * u, 3.0 * u), 1.5 * u, color);
+                    }
+                    _ => {
+                        trait_(self, &[(-9.5, -7.5), (9.5, -7.5), (9.5, 7.5), (-9.5, 7.5), (-9.5, -7.5)]);
+                        trait_(self, &[(-2.5, -3.5), (3.5, 0.0), (-2.5, 3.5), (-2.5, -3.5)]);
+                    }
+                }
+            }
+            Icon::Haut => {
+                self.dl.line(p(0.0, 8.0), p(0.0, -8.0), t, color);
+                self.dl.line(p(-6.5, -1.5), p(0.0, -8.0), t, color);
+                self.dl.line(p(6.5, -1.5), p(0.0, -8.0), t, color);
             }
             Icon::Stop => self.dl.rrect(Rect::new(cx - 7.0 * u, cy - 7.0 * u, 14.0 * u, 14.0 * u), 2.0 * u, color),
             Icon::Close => {

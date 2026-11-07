@@ -25,9 +25,9 @@ need() { command -v "$1" >/dev/null 2>&1 || missing+=("$1 (paquet probable : $2)
 need cargo     rust
 need zipalign  "zipalign ou aapt"
 need apksigner apksigner
-need keytool   openjdk-17
+need keytool   openjdk-21
 need zip       zip
-need javac     openjdk-17
+need javac     openjdk-21
 need d8        d8
 
 # aapt2 de préférence ; sinon l'ancien aapt (fourni par le paquet aapt) fait le même travail ici.

@@ -9,7 +9,7 @@ use crate::mixage::{commande, mixeur, service, Annonce, Voie};
 use std::ffi::{c_char, c_void, CString};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::Duration;
 
 type Extracteur = c_void;
@@ -32,6 +32,7 @@ bibliotheque! { "libmediandk.so", Media,
     AMediaExtractor_new: fn() -> *mut Extracteur;
     AMediaExtractor_delete: fn(*mut Extracteur) -> i32;
     AMediaExtractor_setDataSource: fn(*mut Extracteur, *const c_char) -> i32;
+    AMediaExtractor_setDataSourceFd: fn(*mut Extracteur, i32, i64, i64) -> i32;
     AMediaExtractor_getTrackCount: fn(*mut Extracteur) -> usize;
     AMediaExtractor_getTrackFormat: fn(*mut Extracteur, usize) -> *mut Format;
     AMediaExtractor_selectTrack: fn(*mut Extracteur, usize) -> i32;
@@ -76,15 +77,16 @@ pub fn reveiller() {
 
 /// Change l'état d'une session, et l'annonce à la notification tant que la session
 /// n'a pas été arrêtée (un thread lâché ne doit plus rien annoncer).
-fn noter(etat: &Mutex<Etat>, e: Etat, url: &str, stop: &AtomicBool) {
+fn noter(etat: &Mutex<Etat>, e: Etat, url: &str, piste: &str, stop: &AtomicBool) {
     if !stop.load(Ordering::Relaxed) {
         let a = match &e {
-            Etat::Lecture { .. } => Some((service::LECTURE, e.detail())),
-            Etat::Erreur(m) => Some((service::ERREUR, m.clone())),
+            Etat::Lecture { .. } => Some(Some((service::LECTURE, e.detail()))),
+            Etat::Erreur(m) => Some(Some((service::ERREUR, m.clone()))),
+            Etat::Arret => Some(None),
             _ => None,
         };
-        if let Some((etat, texte)) = a {
-            mixeur().annoncer(PISTE, Some(Annonce { etat, titre: courte(url).to_string(), texte }));
+        if let Some(a) = a {
+            mixeur().annoncer(piste, a.map(|(etat, texte)| Annonce { etat, titre: titre(url).to_string(), texte }));
         }
     }
     if let Ok(mut g) = etat.lock() {
@@ -93,34 +95,46 @@ fn noter(etat: &Mutex<Etat>, e: Etat, url: &str, stop: &AtomicBool) {
     reveiller();
 }
 
-/// Le lecteur de l'application : un seul, partagé entre l'interface et les commandes
-/// de la notification.
-pub fn lecteur() -> std::sync::MutexGuard<'static, Lecteur> {
-    static L: OnceLock<Mutex<Lecteur>> = OnceLock::new();
-    let m = L.get_or_init(|| {
-        mixeur().ecouter(PISTE, commander);
-        Mutex::new(Lecteur::default())
+/// La piste du mixeur où joue la radio.
+pub const PISTE: &str = "Radio";
+/// Celle où jouent les fichiers audio.
+pub const PISTE_FICHIER: &str = "Fichier";
+
+fn global(l: &'static OnceLock<Mutex<Lecteur>>, piste: &'static str, direct: bool, f: fn(i32)) -> MutexGuard<'static, Lecteur> {
+    let m = l.get_or_init(|| {
+        mixeur().ecouter(piste, f);
+        Mutex::new(Lecteur { piste, direct, session: None, adresse: None, dernier: None, suspendu: false })
     });
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// Les commandes de la notification, reçues du mixeur. Un direct ne se met pas en
-/// attente : la pause coupe le flux, la reprise le relance.
-fn commander(c: i32) {
-    let mut l = lecteur();
-    match c {
-        commande::SUSPENDRE if l.actif() => {
-            l.couper();
-            l.suspendu = true;
-        }
-        commande::JOUER if l.suspendu => l.reprendre(),
-        commande::FERMER => l.arreter(),
-        _ => {}
-    }
+/// Le lecteur de la radio : un seul, partagé entre l'interface et les commandes de
+/// la notification.
+pub fn lecteur() -> MutexGuard<'static, Lecteur> {
+    static L: OnceLock<Mutex<Lecteur>> = OnceLock::new();
+    global(&L, PISTE, true, |c| lecteur().commander(c))
 }
 
-/// La piste du mixeur où joue la radio.
-pub const PISTE: &str = "Radio";
+/// Le lecteur des fichiers audio.
+pub fn lecteur_fichiers() -> MutexGuard<'static, Lecteur> {
+    static L: OnceLock<Mutex<Lecteur>> = OnceLock::new();
+    global(&L, PISTE_FICHIER, false, |c| lecteur_fichiers().commander(c))
+}
+
+/// Un chemin du système de fichiers, plutôt qu'une adresse réseau.
+pub fn local(adresse: &str) -> bool {
+    let a = adresse.trim();
+    a.starts_with('/')
+}
+
+/// Ce qu'on montre d'une source : le nom du fichier, ou l'adresse raccourcie.
+pub fn titre(adresse: &str) -> &str {
+    if local(adresse) {
+        adresse.trim().rsplit('/').next().unwrap_or(adresse)
+    } else {
+        courte(adresse)
+    }
+}
 
 /// Où en est la lecture, pour l'affichage.
 #[derive(Clone, Debug, PartialEq)]
@@ -157,9 +171,12 @@ struct Session {
     stop: Arc<AtomicBool>,
 }
 
-/// Un lecteur : au plus un flux à la fois.
-#[derive(Default)]
+/// Un lecteur : au plus un flux à la fois, sur sa piste du mixeur.
 pub struct Lecteur {
+    piste: &'static str,
+    /// Une source en direct (la radio) : la pause coupe le flux, la reprise le
+    /// relance. Un fichier, lui, attend simplement que le mixeur reprenne.
+    direct: bool,
     session: Option<Session>,
     pub adresse: Option<String>,
     /// Le dernier flux lancé, que la commande Lecture de la notification reprend.
@@ -177,22 +194,36 @@ impl Lecteur {
         matches!(self.etat(), Etat::Connexion | Etat::Lecture { .. })
     }
 
+    /// Les commandes de la notification, reçues du mixeur.
+    fn commander(&mut self, c: i32) {
+        match c {
+            commande::SUSPENDRE if self.direct && self.actif() => {
+                self.couper();
+                self.suspendu = true;
+            }
+            commande::JOUER if self.suspendu => self.reprendre(),
+            commande::FERMER => self.arreter(),
+            _ => {}
+        }
+    }
+
     pub fn jouer(&mut self, adresse: &str) {
         self.couper();
-        // 2 s de stéréo à 48 kHz : de quoi absorber les à-coups du réseau
         let s = Session { etat: Arc::new(Mutex::new(Etat::Connexion)), stop: Arc::new(AtomicBool::new(false)) };
         let (etat, stop) = (s.etat.clone(), s.stop.clone());
         let url = adresse.trim().to_string();
+        let (piste, direct) = (self.piste, self.direct);
         std::thread::spawn(move || {
             // setDataSource sur une adresse réseau exige un thread connu de Java
             let vm = crate::acces::vm();
             let attache = unsafe { crate::acces::attacher(vm) }.is_some();
-            let fin = match unsafe { lire(&url, &etat, &stop) } {
-                Ok(()) if stop.load(Ordering::Relaxed) => Etat::Arret,
+            let fin = match unsafe { lire(&url, piste, &etat, &stop) } {
+                Ok(()) if stop.load(Ordering::Relaxed) || !direct => Etat::Arret,
+                // Un direct ne devrait jamais finir
                 Ok(()) => Etat::Erreur("fin du flux".into()),
                 Err(e) => Etat::Erreur(e),
             };
-            noter(&etat, fin, &url, &stop);
+            noter(&etat, fin, &url, piste, &stop);
             if attache {
                 unsafe { crate::acces::detacher(vm) };
             }
@@ -200,7 +231,8 @@ impl Lecteur {
         self.session = Some(s);
         let a = adresse.trim().to_string();
         self.suspendu = false;
-        mixeur().annoncer(PISTE, Some(Annonce { etat: service::CONNEXION, titre: courte(&a).to_string(), texte: "Connexion…".into() }));
+        let texte = if self.direct { "Connexion…" } else { "Ouverture…" };
+        mixeur().annoncer(self.piste, Some(Annonce { etat: service::CONNEXION, titre: titre(&a).to_string(), texte: texte.into() }));
         self.adresse = Some(a.clone());
         self.dernier = Some(a);
     }
@@ -218,7 +250,7 @@ impl Lecteur {
     pub fn arreter(&mut self) {
         self.couper();
         self.suspendu = false;
-        mixeur().annoncer(PISTE, None);
+        mixeur().annoncer(self.piste, None);
     }
 
     pub fn reprendre(&mut self) {
@@ -271,7 +303,7 @@ impl Drop for Garde<'_> {
     }
 }
 
-unsafe fn lire(url: &str, etat: &Mutex<Etat>, stop: &AtomicBool) -> Result<(), String> {
+unsafe fn lire(url: &str, piste_mix: &str, etat: &Mutex<Etat>, stop: &AtomicBool) -> Result<(), String> {
     let m = media()?;
     aaudio()?;
     let ex = (m.AMediaExtractor_new)();
@@ -279,9 +311,22 @@ unsafe fn lire(url: &str, etat: &Mutex<Etat>, stop: &AtomicBool) -> Result<(), S
         return Err("extracteur indisponible".into());
     }
     let mut g = Garde { m, ex, codec: std::ptr::null_mut(), format: std::ptr::null_mut() };
-    let curl = CString::new(url.trim()).map_err(|_| "adresse invalide".to_string())?;
-    if (m.AMediaExtractor_setDataSource)(ex, curl.as_ptr()) != AMEDIA_OK {
-        return Err("flux injoignable ou format inconnu".into());
+    // Un chemin local s'ouvre ici et passe par son descripteur ; une adresse réseau,
+    // Android l'ouvre lui-même
+    let _fichier;
+    if local(url) {
+        use std::os::fd::AsRawFd;
+        let f = std::fs::File::open(url.trim()).map_err(|e| format!("fichier illisible : {e}"))?;
+        let taille = f.metadata().map(|m| m.len()).unwrap_or(0) as i64;
+        if (m.AMediaExtractor_setDataSourceFd)(ex, f.as_raw_fd(), 0, taille) != AMEDIA_OK {
+            return Err("format inconnu".into());
+        }
+        _fichier = f;
+    } else {
+        let curl = CString::new(url.trim()).map_err(|_| "adresse invalide".to_string())?;
+        if (m.AMediaExtractor_setDataSource)(ex, curl.as_ptr()) != AMEDIA_OK {
+            return Err("flux injoignable ou format inconnu".into());
+        }
     }
     if stop.load(Ordering::Relaxed) {
         return Ok(());
@@ -316,8 +361,8 @@ unsafe fn lire(url: &str, etat: &Mutex<Etat>, stop: &AtomicBool) -> Result<(), S
     }
 
     let codec = mime.trim_start_matches("audio/").to_string();
-    // Une voie de la piste « Radio » du mixeur, à la fréquence du flux
-    let voie: Voie = mixeur().ouvrir(PISTE, frequence as u32)?;
+    // Une voie de la piste du lecteur, à la fréquence du flux
+    let voie: Voie = mixeur().ouvrir(piste_mix, frequence as u32)?;
     let mut f32s: Vec<f32> = Vec::new();
     let mut entree_finie = false;
     let mut annonce = false;
@@ -363,7 +408,7 @@ unsafe fn lire(url: &str, etat: &Mutex<Etat>, stop: &AtomicBool) -> Result<(), S
             // Le premier son décodé : la lecture commence vraiment
             if !annonce && !f32s.is_empty() {
                 annonce = true;
-                noter(etat, Etat::Lecture { codec: codec.clone(), frequence, canaux }, url, stop);
+                noter(etat, Etat::Lecture { codec: codec.clone(), frequence, canaux }, url, piste_mix, stop);
             }
             // Pousse tout, en attendant que le rappel fasse de la place
             voie.pousser(&f32s, stop);

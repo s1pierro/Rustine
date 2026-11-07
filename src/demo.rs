@@ -4,6 +4,7 @@
 //! l'écran est réservé aux gestes du système, mais les appuis y restent disponibles.
 
 use crate::draw::{Color, Rect};
+use crate::explorateur::{self, Dossier, Nature};
 use crate::math::{self, Mat4};
 use crate::clavier::{self, Clavier, Disposition, Edition};
 use crate::mixage::{self, mixeur, Piste, Reglage};
@@ -47,17 +48,19 @@ const RUSTINE: Id = id("rustine");
 const ESSAI: Id = id("essai-clavier");
 const RADIO: Id = id("radio");
 const RADIO_CHAMP: Id = id("radio-adresse");
+const FICHIERS: Id = id("fichiers");
 
 /// Deux flux pour essayer, tant que l'historique est vide.
 const SUGGESTIONS: [&str; 2] = ["https://icecast.radiofrance.fr/fip-midfi.mp3", "https://stream.radioparadise.com/aac-128"];
 
 /// Les vues qu'une fenêtre de la surface peut montrer.
-pub const VUES: [(&str, Icon); 5] = [("Cube", Icon::Cube), ("Couleurs", Icon::List), ("Aide", Icon::Help), ("Paramètres", Icon::Sliders), ("Radio", Icon::Radio)];
+pub const VUES: [(&str, Icon); 6] = [("Cube", Icon::Cube), ("Couleurs", Icon::List), ("Aide", Icon::Help), ("Paramètres", Icon::Sliders), ("Radio", Icon::Radio), ("Fichiers", Icon::Dossier)];
 pub const VUE_CUBE: u32 = 0;
 pub const VUE_COULEURS: u32 = 1;
 pub const VUE_AIDE: u32 = 2;
 pub const VUE_PARAMETRES: u32 = 3;
 pub const VUE_RADIO: u32 = 4;
+pub const VUE_FICHIERS: u32 = 5;
 
 /// Une vue 3D : son rectangle à l'écran et sa matrice.
 #[derive(Clone, Copy)]
@@ -101,6 +104,11 @@ pub struct App {
     /// Le clavier virtuel, et le champ d'essai de la vue Paramètres.
     pub clavier: Clavier,
     essai: Edition,
+    /// L'explorateur : la racine du stockage partagé, le dossier ouvert dans chaque
+    /// fenêtre Fichiers, et l'affichage des fichiers cachés.
+    racine: Option<PathBuf>,
+    dossiers: HashMap<FenetreId, Dossier>,
+    caches: bool,
     /// Une vue Radio est à l'écran : ses vumètres s'animent tant qu'une voie joue.
     vumetres: bool,
     /// La radio : l'adresse saisie et les derniers flux écoutés ; le lecteur est
@@ -140,6 +148,9 @@ impl App {
             essai: Edition::default(),
             adresse: Edition::default(),
             vumetres: false,
+            racine: None,
+            dossiers: HashMap::new(),
+            caches: false,
             historique: Historique::default(),
             surface: Surface::new(VUE_CUBE),
             cams: HashMap::new(),
@@ -185,6 +196,21 @@ impl App {
                 self.cams.clear();
             }
         }
+    }
+
+    /// La racine du stockage, donnée par Android ; au retour dans l'application, les
+    /// dossiers ouverts sont relus (ils ont pu changer entre-temps).
+    pub fn racine_en(&mut self, racine: Option<PathBuf>) {
+        self.racine = racine;
+        let caches = self.caches;
+        for d in self.dossiers.values_mut() {
+            *d = Dossier::lire(&d.chemin.clone(), caches);
+        }
+    }
+
+    /// Ouvre un dossier dans une fenêtre Fichiers.
+    fn ouvrir_dossier(&mut self, f: FenetreId, chemin: PathBuf) {
+        self.dossiers.insert(f, Dossier::lire(&chemin, self.caches));
     }
 
     /// (Re)lit l'historique des radios, rangé à côté des réglages.
@@ -254,6 +280,7 @@ impl App {
                 }
                 Changement::Fermee(f) => {
                     self.cams.remove(&f);
+                    self.dossiers.remove(&f);
                 }
                 Changement::Vue { .. } => {}
             }
@@ -339,6 +366,10 @@ impl App {
                 cx.dl.rrect(r, 0.0, col.surface);
                 self.parametres(cx, sub_id(PARAMS, k), r);
                 "Apparence de l'interface".to_string()
+            }
+            VUE_FICHIERS => {
+                cx.dl.rrect(r, 0.0, col.surface);
+                self.fichiers(cx, p.id, r)
             }
             VUE_RADIO => {
                 cx.dl.rrect(r, 0.0, col.surface);
@@ -484,6 +515,123 @@ impl App {
             Etat::Erreur(_) => "erreur".into(),
             Etat::Arret => "arrêt".into(),
         }
+    }
+
+    /// La vue Fichiers : le fil d'Ariane, le dossier parent, puis le contenu du
+    /// dossier. Un dossier s'ouvre au toucher, un fichier audio se lit dans la piste
+    /// « Fichier » du mixeur. Renvoie la ligne d'état.
+    fn fichiers(&mut self, cx: &mut Cx, f: FenetreId, r: Rect) -> String {
+        let (d, col) = (cx.dp, cx.couleurs());
+        if !self.dossiers.contains_key(&f) {
+            let depart = self.racine.clone().unwrap_or_else(|| PathBuf::from("/"));
+            self.ouvrir_dossier(f, depart);
+        }
+        let dossier = self.dossiers[&f].clone();
+        let base = sub_id(FICHIERS, f as usize);
+        // Un défilement par dossier : en revenant au parent, on retrouve sa position
+        let scroll = sub_id(base, hachage(&dossier.chemin));
+        let lecture = radio::lecteur_fichiers().adresse.clone();
+        let ligne = (cx.theme.ligne * d).round();
+        let mut aller: Option<PathBuf> = None;
+        let mut b = cx.body(scroll, r, &self.scrolls);
+
+        // Le fil d'Ariane : chaque étape s'ouvre au toucher ; trop long, on voit la fin
+        let etapes = explorateur::ariane(&dossier.chemin, self.racine.as_deref());
+        let sep = "  ›  ";
+        let largeur: f32 = etapes.iter().map(|(n, _)| cx.measure(n, 15.0)).sum::<f32>() + cx.measure(sep, 15.0) * (etapes.len() as f32 - 1.0);
+        let mut x = b.x + (b.w - largeur).min(0.0);
+        for (i, (nom, chemin)) in etapes.iter().enumerate() {
+            let w = cx.measure(nom, 15.0);
+            let zone = Rect::new(x - 4.0 * d, b.y, w + 8.0 * d, ligne);
+            let derniere = i + 1 == etapes.len();
+            if cx.ui.click(sub_id(base, 1_000_000 + i), zone, Some(b.id())) && !derniere {
+                aller = Some(chemin.clone());
+            }
+            cx.text_at(x, b.y + ligne / 2.0, nom, 15.0, if derniere { col.texte } else { col.accent });
+            x += w;
+            if !derniere {
+                cx.text_at(x, b.y + ligne / 2.0, sep, 15.0, col.pale);
+                x += cx.measure(sep, 15.0);
+            }
+        }
+        b.y += ligne;
+        cx.dl.rrect(Rect::new(b.rect().x, b.y, b.rect().w, d.max(1.0)), 0.0, col.ligne);
+
+        if let Some(parent) = dossier.chemin.parent() {
+            if self.ligne_fichier(cx, &mut b, sub_id(base, 999_999), Icon::Haut, "Dossier parent", "", false) {
+                aller = Some(parent.to_path_buf());
+            }
+        }
+        if let Some(e) = &dossier.erreur {
+            let aide = if e == "Accès refusé" { format!("{e}. Pour parcourir tout le stockage, accordez à Rustine l'accès à tous les fichiers dans les réglages d'Android.") } else { format!("{e}.") };
+            cx.paragraph(&mut b, &aide);
+        } else if dossier.entrees.is_empty() {
+            cx.paragraph(&mut b, "Dossier vide.");
+        }
+        for (i, e) in dossier.entrees.iter().enumerate() {
+            let chemin = dossier.chemin.join(&e.nom);
+            let icone = match e.nature {
+                Nature::Dossier => Icon::Dossier,
+                Nature::Audio => Icon::Note,
+                Nature::Image => Icon::Photo,
+                Nature::Video => Icon::Film,
+                _ => Icon::Fichier,
+            };
+            let info = if e.dossier() { String::new() } else { explorateur::taille(e.taille) };
+            let joue = lecture.as_deref() == chemin.to_str();
+            if self.ligne_fichier(cx, &mut b, sub_id(base, i), icone, &e.nom, &info, joue) {
+                match e.nature {
+                    Nature::Dossier => aller = Some(chemin),
+                    Nature::Audio if joue => radio::lecteur_fichiers().arreter(),
+                    Nature::Audio => radio::lecteur_fichiers().jouer(&chemin.to_string_lossy()),
+                    _ => {}
+                }
+            }
+        }
+        b.y += cx.ecart();
+        let mut caches = self.caches;
+        cx.toggle(&mut b, sub_id(base, 999_998), "Fichiers cachés", &mut caches);
+        cx.body_end(b, &mut self.scrolls);
+        if caches != self.caches {
+            self.caches = caches;
+            aller = Some(dossier.chemin.clone());
+        }
+        if let Some(c) = aller {
+            self.ouvrir_dossier(f, c);
+        }
+        let (nd, nf) = dossier.compte();
+        let pluriel = |n: usize, mot: &str| format!("{n} {mot}{}", if n > 1 { "s" } else { "" });
+        format!("{} · {}", pluriel(nd, "dossier"), pluriel(nf, "fichier"))
+    }
+
+    /// Une ligne de l'explorateur : icône, nom, et à droite une information en chasse
+    /// fixe. Hors de la zone visible, elle ne fait que réserver sa place.
+    #[allow(clippy::too_many_arguments)]
+    fn ligne_fichier(&self, cx: &mut Cx, b: &mut crate::widgets::Body, id: Id, icone: Icon, nom: &str, info: &str, choisie: bool) -> bool {
+        let (d, col) = (cx.dp, cx.couleurs());
+        let r = Rect::new(b.rect().x, b.y, b.rect().w, (cx.theme.ligne * d).round());
+        b.y += r.h;
+        let vue = b.rect();
+        if r.bottom() < vue.y || r.y > vue.bottom() {
+            return false;
+        }
+        let clic = cx.ui.click(id, r, Some(b.id()));
+        if cx.ui.pressed(id) || choisie {
+            cx.dl.rrect(r.inset(2.0 * d), cx.theme.rayon(r.h) * 0.45, col.puce);
+        }
+        let ic = (r.h * 0.5).round();
+        let teinte = if icone == Icon::Dossier || choisie { col.accent } else { col.pale };
+        cx.icon(Rect::new(b.x, r.cy() - ic / 2.0, ic, ic), icone, teinte);
+        let x = b.x + ic + 12.0 * d;
+        let wi = if info.is_empty() { 0.0 } else { cx.measure(info, 12.0) + 12.0 * d };
+        let fin = b.x + b.w - wi;
+        cx.clip(Some(Rect::new(x, r.y, (fin - x).max(0.0), r.h).intersect(&vue)));
+        cx.text_at(x, r.cy(), nom, 16.0, if choisie { col.accent } else { col.texte });
+        cx.clip(Some(vue));
+        if !info.is_empty() {
+            cx.mono_at(b.x + b.w - wi + 12.0 * d, r.cy(), info, 12.0, col.pale);
+        }
+        clic
     }
 
     /// Le tableau du mixeur : la voie d'essai à lancer, chaque piste connue avec son
@@ -779,6 +927,14 @@ impl App {
         let [r, g, b, _] = COLORS[self.color].1;
         Scene { workspace: w, vues, fond: Theme::default().couleurs().fond, color: [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0], tint: if self.faces { 0.25 } else { 0.0 } }
     }
+}
+
+/// Un nombre tiré d'un chemin, pour donner à chaque dossier son défilement.
+fn hachage(p: &std::path::Path) -> usize {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    p.hash(&mut h);
+    h.finish() as usize
 }
 
 #[cfg(test)]

@@ -11,6 +11,7 @@ pub mod audio;
 pub mod clavier;
 pub mod demo;
 pub mod draw;
+pub mod explorateur;
 pub mod gles;
 pub mod math;
 pub mod mixage;
